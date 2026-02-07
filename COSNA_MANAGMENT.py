@@ -35,7 +35,7 @@ if 'authenticator' not in st.session_state:
         'usernames': {
             'admin': {
                 'name': 'Administrator',
-                'password': 'costa2026',  # plain text – will be auto-hashed
+                'password': 'costa2026',  # plain text – auto-hash enabled
                 'email': 'admin@costa.school'
             }
         }
@@ -45,18 +45,16 @@ if 'authenticator' not in st.session_state:
         credentials=credentials,
         cookie_name='costa_school_cookie',
         cookie_key='costa_school_secret_2026_change_this',
-        cookie_expiry_days=30,
-        auto_hash=True
+        cookie_expiry_days=30
     )
 
     st.session_state.credentials = credentials
 
 authenticator = st.session_state.authenticator
 
-# ─── Login – use KEYWORD arguments for location ────────────────────────
+# ─── Login – NO location parameter (default to main) ───────────────────
 name, authentication_status, username = authenticator.login(
-    form_name='Login',
-    location='main'   # ← FIXED: keyword, not positional
+    form_name='Login'  # only form_name – no location keyword
 )
 
 if authentication_status:
@@ -77,14 +75,14 @@ if authentication_status:
 elif authentication_status is False:
     st.error('Username or password is incorrect')
 elif authentication_status is None:
-    st.warning('Please enter your username and password')
+    st.warning('Please enter username and password')
 
-# Forgot password – shows new password on screen
+# Forgot password
 try:
     username_forgot, email_forgot, random_pw = authenticator.forgot_password('Forgot password?')
     if username_forgot:
         st.success(f"**New temporary password for {username_forgot}:**  {random_pw}")
-        st.info("Copy this immediately — it disappears after refresh.")
+        st.info("Copy this immediately – it disappears after refresh.")
         st.warning("Log in now, then change it via sidebar → Change my password")
 except Exception as e:
     if "No username provided" not in str(e):
@@ -106,15 +104,15 @@ if page == "Dashboard":
     exp = conn.execute("SELECT SUM(amount) FROM expenses").fetchone()[0] or 0
     col3.metric("Net Balance", f"USh {inc - exp:,.0f}")
 
-# ─── Students (example – expand as needed) ─────────────────────────────
+# ─── Students ──────────────────────────────────────────────────────────
 elif page == "Students":
     st.header("Students")
-    # View / add / export code here (from your previous versions)
+    # Add your full students view/add/export code here from previous versions
 
 # ─── Uniforms ──────────────────────────────────────────────────────────
 elif page == "Uniforms":
     st.header("Uniforms")
-    # Your code ...
+    # Add your code
 
 # ─── Finances ──────────────────────────────────────────────────────────
 elif page == "Finances":
@@ -159,6 +157,6 @@ elif page == "Financial Report":
         tab1, tab2 = st.tabs(["Incomes", "Expenses"])
         tab1.dataframe(inc)
         tab2.dataframe(exp)
-        # Add your PDF / Excel export code here if needed
+        # Add PDF/Excel if needed
 
 st.sidebar.info("SQLite database – persistent on Streamlit Cloud")
