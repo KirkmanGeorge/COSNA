@@ -237,7 +237,7 @@ elif page == "Uniforms":
                     cursor.execute("UPDATE uniforms SET stock = ?, unit_price = ? WHERE category_id = ?", (new_stock, new_price, cat_id))
                     conn.commit()
                     st.success("Inventory updated")
-                    st.rerun()  # Refresh to show updated inventory
+                    st.rerun()  # Refresh to reflect changes in inventory view
 
     with tab_sale:
         df_cats = pd.read_sql("SELECT id, category FROM uniform_categories ORDER BY category", conn)
@@ -265,7 +265,7 @@ elif page == "Uniforms":
                                        (sale_date, total_amount, f"Uniform Sale - {selected_cat}"))
                         conn.commit()
                         st.success(f"Sold {quantity} items for USh {total_amount:,.0f}. Income recorded.")
-                        st.rerun()  # Refresh to show updated stock
+                        st.rerun()  # Refresh to reflect updated stock
 
 # ─── Finances ──────────────────────────────────────────────────────────
 elif page == "Finances":
