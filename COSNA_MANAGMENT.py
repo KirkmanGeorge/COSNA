@@ -1,7 +1,10 @@
 import streamlit as st
 import sqlite3
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
+import secrets  # For generating reset codes
+import smtplib
+from email.mime.text import MIMEText
 from io import BytesIO
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
@@ -10,31 +13,6 @@ from reportlab.pdfgen import canvas
 st.set_page_config(page_title="Costa School Management", layout="wide")
 st.title("Costa School Management System")
 st.markdown("Login-based system for students, uniforms, expenses & income")
-
-# ─── Simple session-based login (change password in production!) ───────
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
-
-def login():
-    st.subheader("Login")
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
-    if st.button("Login"):
-        if username == "admin" and password == "costa2026":
-            st.session_state.logged_in = True
-            st.success("Logged in successfully!")
-            st.rerun()
-        else:
-            st.error("Invalid credentials")
-
-if not st.session_state.logged_in:
-    login()
-    st.stop()
-
-# Logout button
-if st.sidebar.button("Logout"):
-    st.session_state.logged_in = False
-    st.rerun()
 
 # ─── SQLite connection (persistent file) ───────────────────────────────
 @st.cache_resource
@@ -45,7 +23,15 @@ def get_db_connection():
 conn = get_db_connection()
 cursor = conn.cursor()
 
-# Create tables if not exist
+# Create tables if not exist (added users table)
+cursor.execute('''CREATE TABLE IF NOT EXISTS users
+                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   username TEXT UNIQUE,
+                   password TEXT,
+                   email TEXT UNIQUE,
+                   reset_code TEXT,
+                   reset_expiry DATETIME)''')
+
 cursor.execute('''CREATE TABLE IF NOT EXISTS classes
                   (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
 
@@ -66,7 +52,119 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS incomes
                   (id INTEGER PRIMARY KEY AUTOINCREMENT,
                    date DATE, amount REAL, source TEXT)''')
 
+# Add default admin if not exists
+cursor.execute("SELECT * FROM users WHERE username = 'admin'")
+if not cursor.fetchone():
+    cursor.execute("INSERT INTO users (username, password, email) VALUES (?, ?, ?)",
+                   ('admin', 'costa2026', 'admin@costa.school'))  # Change email to school one
+    conn.commit()
+
 conn.commit()
+
+# ─── Session state ─────────────────────────────────────────────────────
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+if 'user_id' not in st.session_state:
+    st.session_state.user_id = None
+if 'reset_mode' not in st.session_state:
+    st.session_state.reset_mode = False
+if 'reset_username' not in st.session_state:
+    st.session_state.reset_username = None
+
+# ─── Email sending function (configure in secrets.toml) ────────────────
+def send_reset_email(email, code):
+    try:
+        smtp_server = st.secrets["smtp"]["server"]
+        smtp_port = st.secrets["smtp"]["port"]
+        sender_email = st.secrets["smtp"]["sender"]
+        sender_password = st.secrets["smtp"]["password"]
+
+        msg = MIMEText(f"Your password reset code is: {code}\nIt expires in 30 minutes.")
+        msg['Subject'] = 'Costa School Password Reset'
+        msg['From'] = sender_email
+        msg['To'] = email
+
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, email, msg.as_string())
+        return True
+    except Exception as e:
+        st.error(f"Email sending failed: {str(e)}")
+        return False
+
+# ─── Login / Reset Logic ───────────────────────────────────────────────
+def login_page():
+    st.subheader("Login")
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+    if st.button("Login"):
+        cursor.execute("SELECT id, password FROM users WHERE username = ?", (username,))
+        user = cursor.fetchone()
+        if user and user[1] == password:  # Plain text for simplicity; hash in production
+            st.session_state.logged_in = True
+            st.session_state.user_id = user[0]
+            st.success("Logged in!")
+            st.rerun()
+        else:
+            st.error("Invalid credentials")
+
+    # Forgot Password
+    if st.button("Forgot Password?"):
+        st.session_state.reset_mode = True
+        st.rerun()
+
+    if st.session_state.reset_mode:
+        st.subheader("Reset Password")
+        username = st.text_input("Enter your username for reset")
+        if st.button("Send Reset Code"):
+            cursor.execute("SELECT id, email FROM users WHERE username = ?", (username,))
+            user = cursor.fetchone()
+            if user:
+                code = secrets.token_hex(4).upper()  # 8-char code
+                expiry = datetime.now() + timedelta(minutes=30)
+                cursor.execute("UPDATE users SET reset_code = ?, reset_expiry = ? WHERE id = ?",
+                               (code, expiry, user[0]))
+                conn.commit()
+                if send_reset_email(user[1], code):
+                    st.success("Reset code sent to your school email!")
+                    st.session_state.reset_username = username
+                else:
+                    st.error("Failed to send email. Check configuration.")
+            else:
+                st.error("Username not found")
+
+        if st.session_state.reset_username:
+            code_input = st.text_input("Enter reset code")
+            new_password = st.text_input("New Password", type="password")
+            confirm_password = st.text_input("Confirm New Password", type="password")
+            if st.button("Change Password"):
+                if new_password != confirm_password:
+                    st.error("Passwords don't match")
+                else:
+                    cursor.execute("SELECT reset_code, reset_expiry FROM users WHERE username = ?",
+                                   (st.session_state.reset_username,))
+                    reset_data = cursor.fetchone()
+                    if reset_data and reset_data[0] == code_input and datetime.now() < datetime.fromisoformat(reset_data[1]):
+                        cursor.execute("UPDATE users SET password = ?, reset_code = NULL, reset_expiry = NULL WHERE username = ?",
+                                       (new_password, st.session_state.reset_username))
+                        conn.commit()
+                        st.success("Password changed successfully!")
+                        st.session_state.reset_mode = False
+                        st.session_state.reset_username = None
+                        st.rerun()
+                    else:
+                        st.error("Invalid or expired code")
+
+if not st.session_state.logged_in:
+    login_page()
+    st.stop()
+
+# Logout button
+if st.sidebar.button("Logout"):
+    st.session_state.logged_in = False
+    st.session_state.user_id = None
+    st.rerun()
 
 # ─── Sidebar navigation ────────────────────────────────────────────────
 page = st.sidebar.radio("Navigate", ["Dashboard", "Students", "Uniforms", "Finances", "Financial Report"])
@@ -93,6 +191,18 @@ elif page == "Students":
             FROM students s LEFT JOIN classes c ON s.class_id = c.id
         """, conn)
         st.dataframe(df, use_container_width=True)
+        
+        # Excel Export
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df.to_excel(writer, sheet_name='Students', index=False)
+        output.seek(0)
+        st.download_button(
+            label="Download Students Excel Report",
+            data=output,
+            file_name="students_report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
     
     with tab2:
         st.subheader("Add New Student")
@@ -129,6 +239,18 @@ elif page == "Uniforms":
     
     df_uniforms = pd.read_sql("SELECT * FROM uniforms", conn)
     st.dataframe(df_uniforms, use_container_width=True)
+    
+    # Excel Export
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df_uniforms.to_excel(writer, sheet_name='Uniforms', index=False)
+    output.seek(0)
+    st.download_button(
+        label="Download Uniforms Excel Report",
+        data=output,
+        file_name="uniforms_report.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
     
     with st.form("add_uniform"):
         utype = st.text_input("Type (e.g. Shirt)")
@@ -171,6 +293,39 @@ elif page == "Finances":
                                (inc_date, inc_amount, inc_src))
                 conn.commit()
                 st.success("Income recorded")
+
+    # Quick views
+    df_exp = pd.read_sql("SELECT * FROM expenses ORDER BY date DESC LIMIT 20", conn)
+    df_inc = pd.read_sql("SELECT * FROM incomes ORDER BY date DESC LIMIT 20", conn)
+    
+    tab1, tab2 = st.tabs(["Recent Expenses", "Recent Incomes"])
+    with tab1: st.dataframe(df_exp)
+    with tab2: st.dataframe(df_inc)
+    
+    # Excel Exports
+    col_export1, col_export2 = st.columns(2)
+    with col_export1:
+        output_exp = BytesIO()
+        with pd.ExcelWriter(output_exp, engine='xlsxwriter') as writer:
+            df_exp.to_excel(writer, sheet_name='Expenses', index=False)
+        output_exp.seek(0)
+        st.download_button(
+            label="Download Expenses Excel",
+            data=output_exp,
+            file_name="expenses_report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    with col_export2:
+        output_inc = BytesIO()
+        with pd.ExcelWriter(output_inc, engine='xlsxwriter') as writer:
+            df_inc.to_excel(writer, sheet_name='Incomes', index=False)
+        output_inc.seek(0)
+        st.download_button(
+            label="Download Incomes Excel",
+            data=output_inc,
+            file_name="incomes_report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
 # ─── Financial Report ──────────────────────────────────────────────────
 elif page == "Financial Report":
@@ -216,6 +371,25 @@ elif page == "Financial Report":
             data=buffer,
             file_name=f"costa_report_{start_date}_to_{end_date}.pdf",
             mime="application/pdf"
+        )
+        
+        # Excel Export for Report
+        output_report = BytesIO()
+        with pd.ExcelWriter(output_report, engine='xlsxwriter') as writer:
+            df_inc.to_excel(writer, sheet_name='Incomes', index=False)
+            df_exp.to_excel(writer, sheet_name='Expenses', index=False)
+            # Add summary sheet
+            summary_df = pd.DataFrame({
+                'Metric': ['Total Income', 'Total Expenses', 'Balance'],
+                'Value': [total_inc, total_exp, balance]
+            })
+            summary_df.to_excel(writer, sheet_name='Summary', index=False)
+        output_report.seek(0)
+        st.download_button(
+            label="Download Excel Report",
+            data=output_report,
+            file_name=f"costa_financial_report_{start_date}_to_{end_date}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
 st.sidebar.info("Data saved in SQLite file (persistent on Streamlit Cloud)")
