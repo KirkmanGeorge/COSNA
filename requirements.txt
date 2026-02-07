@@ -1,6 +1,6 @@
-streamlit==1.42.0
-pandas==2.2.3
-reportlab==4.2.5
-xlsxwriter
-streamlit-authenticator
+streamlit-authenticator==0.3.3
 pyyaml
+xlsxwriter   # if not already there
+pandas
+reportlab
+streamlit
