@@ -27,9 +27,9 @@ if not st.session_state.logged_in:
             st.rerun()
         else:
             st.error("Invalid username or password")
-    st.stop()  # Stop here if not logged in
+    st.stop()
 
-# Logout button in sidebar
+# Logout in sidebar
 with st.sidebar:
     if st.button("Logout"):
         st.session_state.logged_in = False
@@ -44,7 +44,7 @@ def get_db_connection():
 conn = get_db_connection()
 cursor = conn.cursor()
 
-# Create tables if they don't exist
+# ─── Create tables ─────────────────────────────────────────────────────
 cursor.execute('''CREATE TABLE IF NOT EXISTS classes
                   (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
 
@@ -55,11 +55,11 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS students
 
 cursor.execute('''CREATE TABLE IF NOT EXISTS uniform_categories
                   (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                   category TEXT UNIQUE, gender TEXT, is_shared INTEGER DEFAULT 0)''')  # gender: 'boys', 'girls', 'shared'
+                   category TEXT UNIQUE, gender TEXT, is_shared INTEGER DEFAULT 0)''')
 
 cursor.execute('''CREATE TABLE IF NOT EXISTS uniforms
                   (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                   category_id INTEGER, stock INTEGER DEFAULT 0, unit_price REAL DEFAULT 0.0,
+                   category_id INTEGER UNIQUE, stock INTEGER DEFAULT 0, unit_price REAL DEFAULT 0.0,
                    FOREIGN KEY(category_id) REFERENCES uniform_categories(id))''')
 
 cursor.execute('''CREATE TABLE IF NOT EXISTS expense_categories
@@ -72,32 +72,38 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS expenses
 
 cursor.execute('''CREATE TABLE IF NOT EXISTS incomes
                   (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                   date DATE, amount REAL, source TEXT)''')  # source e.g. 'Uniform Sale', 'Fees', 'Donations'
+                   date DATE, amount REAL, source TEXT)''')
 
 conn.commit()
 
-# Pre-populate uniform categories if not exist (your specified logic)
-uniform_data = [
-    ('shorts_main', 'boys', 0),
-    ('button_shirts_main', 'shared', 1),
-    ('stockings', 'boys', 0),
-    ('shorts_sports', 'boys', 0),
-    ('t_shirts_sports', 'shared', 1),
-    ('dresses_main', 'girls', 0)
+# ─── Pre-populate uniform categories (only if missing) ─────────────────
+uniform_seeds = [
+    ('Boys Main Shorts', 'boys', 0),
+    ('Button Shirts Main', 'shared', 1),
+    ('Boys Stockings', 'boys', 0),
+    ('Boys Sports Shorts', 'boys', 0),
+    ('Shared Sports T-Shirts', 'shared', 1),
+    ('Girls Main Dresses', 'girls', 0)
 ]
 
-for cat, gender, is_shared in uniform_data:
-    cursor.execute("SELECT id FROM uniform_categories WHERE category = ?", (cat,))
+for cat_name, gender, shared in uniform_seeds:
+    cursor.execute("SELECT id FROM uniform_categories WHERE category = ?", (cat_name,))
     if not cursor.fetchone():
-        cursor.execute("INSERT INTO uniform_categories (category, gender, is_shared) VALUES (?, ?, ?)", (cat, gender, is_shared))
+        cursor.execute(
+            "INSERT INTO uniform_categories (category, gender, is_shared) VALUES (?, ?, ?)",
+            (cat_name, gender, shared)
+        )
         conn.commit()
-        # Initialize stock and price for each category
-        cursor.execute("INSERT INTO uniforms (category_id, stock, unit_price) VALUES ((SELECT MAX(id) FROM uniform_categories), 0, 0.0)")
+        cat_id = cursor.lastrowid
+        cursor.execute(
+            "INSERT INTO uniforms (category_id, stock, unit_price) VALUES (?, 0, 0.0)",
+            (cat_id,)
+        )
         conn.commit()
 
-# Pre-populate some expense categories if not exist (example logic: common school expenses)
-expense_cats = ['Medical', 'Salaries', 'Utilities', 'Maintenance', 'Supplies', 'Transportation', 'Events']
-for cat in expense_cats:
+# ─── Pre-populate common expense categories ────────────────────────────
+expense_seeds = ['Medical', 'Salaries', 'Utilities', 'Maintenance', 'Supplies', 'Transport', 'Events']
+for cat in expense_seeds:
     cursor.execute("SELECT id FROM expense_categories WHERE name = ?", (cat,))
     if not cursor.fetchone():
         cursor.execute("INSERT INTO expense_categories (name) VALUES (?)", (cat,))
@@ -110,58 +116,50 @@ page = st.sidebar.radio("Menu", ["Dashboard", "Students", "Uniforms", "Finances"
 if page == "Dashboard":
     st.header("Overview")
 
-    col1, col3 = st.columns(2)  # Removed uniform from dashboard
+    col1, col2 = st.columns(2)
     col1.metric("Total Students", conn.execute("SELECT COUNT(*) FROM students").fetchone()[0])
+    col2.metric("Net Balance (All Time)", f"USh {(conn.execute('SELECT SUM(amount) FROM incomes').fetchone()[0] or 0) - (conn.execute('SELECT SUM(amount) FROM expenses').fetchone()[0] or 0):,.0f}")
 
-    inc_sum = conn.execute("SELECT SUM(amount) FROM incomes").fetchone()[0] or 0
-    exp_sum = conn.execute("SELECT SUM(amount) FROM expenses").fetchone()[0] or 0
-    col3.metric("Net Balance (All Time)", f"USh {inc_sum - exp_sum:,.0f}")
-
-    # Other income sources suggestion: View recent incomes
-    st.subheader("Recent Incomes")
-    df_inc = pd.read_sql("SELECT date, amount, source FROM incomes ORDER BY date DESC LIMIT 5", conn)
-    st.dataframe(df_inc, use_container_width=True)
+    st.subheader("Recent Incomes (last 5)")
+    df_recent_inc = pd.read_sql("SELECT date, amount, source FROM incomes ORDER BY date DESC LIMIT 5", conn)
+    st.dataframe(df_recent_inc, use_container_width=True)
 
 # ─── Students ──────────────────────────────────────────────────────────
 elif page == "Students":
-    st.header("Students")
+    st.header("Students Management")
 
-    tab1, tab2 = st.tabs(["View & Export", "Add Student"])
+    tab_view, tab_add = st.tabs(["View Students", "Add New Student"])
 
-    with tab1:
-        # Filter by class
-        classes = pd.read_sql("SELECT name FROM classes", conn)['name'].tolist()
-        selected_class = st.selectbox("Select Class to View", ["All Classes"] + classes)
-        if selected_class == "All Classes":
-            df = pd.read_sql_query("""
-                SELECT s.id, s.name, s.age, s.enrollment_date, c.name AS class_name
-                FROM students s LEFT JOIN classes c ON s.class_id = c.id
-            """, conn)
-        else:
-            df = pd.read_sql_query("""
-                SELECT s.id, s.name, s.age, s.enrollment_date, c.name AS class_name
-                FROM students s LEFT JOIN classes c ON s.class_id = c.id
-                WHERE c.name = ?
-            """, conn, params=(selected_class,))
+    with tab_view:
+        classes = pd.read_sql("SELECT name FROM classes ORDER BY name", conn)['name'].tolist()
+        selected_class = st.selectbox("Filter by Class", ["All Classes"] + classes)
+
+        query = """
+            SELECT s.id, s.name, s.age, s.enrollment_date, c.name AS class_name
+            FROM students s LEFT JOIN classes c ON s.class_id = c.id
+        """
+        params = ()
+        if selected_class != "All Classes":
+            query += " WHERE c.name = ?"
+            params = (selected_class,)
+
+        df = pd.read_sql_query(query, conn, params=params)
         st.dataframe(df, use_container_width=True)
 
-        buf = BytesIO()
-        with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-            df.to_excel(writer, sheet_name='Students', index=False)
-        buf.seek(0)
-        st.download_button(
-            label="Download Students Excel",
-            data=buf,
-            file_name="cosna_students.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        if not df.empty:
+            buf = BytesIO()
+            with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+                df.to_excel(writer, sheet_name='Students', index=False)
+            buf.seek(0)
+            st.download_button("Download Filtered Students Excel", buf, "cosna_students.xlsx",
+                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-    with tab2:
-        with st.form("add_student", clear_on_submit=True):  # Clear form after submit
-            name = st.text_input("Full name")
+    with tab_add:
+        with st.form("add_student", clear_on_submit=True):
+            name = st.text_input("Full Name")
             age = st.number_input("Age", min_value=5, max_value=30, value=10)
-            enroll_date = st.date_input("Enrollment date", datetime.today())
-            cls_df = pd.read_sql("SELECT id, name FROM classes", conn)
+            enroll_date = st.date_input("Enrollment Date", datetime.today())
+            cls_df = pd.read_sql("SELECT id, name FROM classes ORDER BY name", conn)
             cls_name = st.selectbox("Class", cls_df["name"] if not cls_df.empty else ["No classes yet"])
             cls_id = cls_df[cls_df["name"] == cls_name]["id"].iloc[0] if not cls_df.empty and cls_name != "No classes yet" else None
 
@@ -171,142 +169,134 @@ elif page == "Students":
                     (name, age, enroll_date, int(cls_id))
                 )
                 conn.commit()
-                st.success("Student added")
+                st.success(f"Student '{name}' added to {cls_name}")
 
-    with st.expander("Add new class"):
-        new_cls = st.text_input("Class name (e.g. P.1, S.2)")
-        if st.button("Create class") and new_cls:
-            try:
-                cursor.execute("INSERT INTO classes (name) VALUES (?)", (new_cls,))
-                conn.commit()
-                st.success(f"Class {new_cls} created")
-            except sqlite3.IntegrityError:
-                st.error("Class name already exists")
+    with st.expander("Add New Class"):
+        with st.form("add_class", clear_on_submit=True):
+            new_cls = st.text_input("Class Name (e.g. P.1, S.1)")
+            if st.form_submit_button("Create Class") and new_cls:
+                try:
+                    cursor.execute("INSERT INTO classes (name) VALUES (?)", (new_cls,))
+                    conn.commit()
+                    st.success(f"Class '{new_cls}' created")
+                except sqlite3.IntegrityError:
+                    st.error("Class already exists")
 
 # ─── Uniforms ──────────────────────────────────────────────────────────
 elif page == "Uniforms":
-    st.header("Uniforms (Inventory & Sales)")
+    st.header("Uniform Inventory & Sales")
 
-    tab1, tab2, tab3 = st.tabs(["View & Export Inventory", "Update Stock & Price", "Record Sale"])
+    tab_view, tab_update, tab_sale = st.tabs(["View Inventory", "Update Stock/Price", "Record Sale"])
 
-    with tab1:
+    with tab_view:
         df = pd.read_sql_query("""
-            SELECT u.id, uc.category, uc.gender, uc.is_shared, u.stock, u.unit_price
-            FROM uniforms u LEFT JOIN uniform_categories uc ON u.category_id = uc.id
+            SELECT uc.category, uc.gender, uc.is_shared, u.stock, u.unit_price
+            FROM uniforms u
+            JOIN uniform_categories uc ON u.category_id = uc.id
+            ORDER BY uc.gender, uc.category
         """, conn)
         st.dataframe(df, use_container_width=True)
 
-        buf = BytesIO()
-        with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-            df.to_excel(writer, sheet_name='Uniforms', index=False)
-        buf.seek(0)
-        st.download_button(
-            label="Download Uniforms Inventory Excel",
-            data=buf,
-            file_name="cosna_uniforms.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        if not df.empty:
+            buf = BytesIO()
+            with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+                df.to_excel(writer, sheet_name='Uniform Inventory', index=False)
+            buf.seek(0)
+            st.download_button("Download Inventory Excel", buf, "cosna_uniform_inventory.xlsx",
+                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-    with tab2:
-        st.subheader("Update Stock & Price")
-        df_cats = pd.read_sql("SELECT id, category FROM uniform_categories", conn)
-        selected_cat_id = st.selectbox("Select Category", df_cats["category"], format_func=lambda x: x)
-        cat_id = df_cats[df_cats["category"] == selected_cat_id]["id"].iloc[0] if selected_cat_id else None
+    with tab_update:
+        st.subheader("Update Stock & Unit Price")
+        df_cats = pd.read_sql("SELECT id, category FROM uniform_categories ORDER BY category", conn)
+        selected_cat = st.selectbox("Select Uniform Category", df_cats["category"])
+        cat_id = df_cats[df_cats["category"] == selected_cat]["id"].iloc[0]
 
-        current_stock = conn.execute("SELECT stock FROM uniforms WHERE category_id = ?", (cat_id,)).fetchone()[0] or 0
-        current_price = conn.execute("SELECT unit_price FROM uniforms WHERE category_id = ?", (cat_id,)).fetchone()[0] or 0.0
+        current = conn.execute("SELECT stock, unit_price FROM uniforms WHERE category_id = ?", (cat_id,)).fetchone()
+        curr_stock, curr_price = current if current else (0, 0.0)
 
-        st.write(f"Current stock: {current_stock}")
-        st.write(f"Current unit price: USh {current_price:,.0f}")
+        st.write(f"**Current stock:** {curr_stock}")
+        st.write(f"**Current price:** USh {curr_price:,.0f}")
 
         with st.form("update_uniform", clear_on_submit=True):
-            new_stock = st.number_input("New Stock (overrides current)", min_value=0, value=current_stock)
-            new_price = st.number_input("New Unit Price (USh)", min_value=0.0, value=current_price)
+            new_stock = st.number_input("New Stock Level", min_value=0, value=curr_stock)
+            new_price = st.number_input("New Unit Price (USh)", min_value=0.0, value=curr_price, step=500.0)
 
             if st.form_submit_button("Update"):
-                cursor.execute("UPDATE uniforms SET stock = ?, unit_price = ? WHERE category_id = ?", (new_stock, new_price, cat_id))
+                cursor.execute("UPDATE uniforms SET stock = ?, unit_price = ? WHERE category_id = ?",
+                               (new_stock, new_price, cat_id))
                 conn.commit()
-                st.success("Updated successfully")
+                st.success("Inventory updated")
 
-    with tab3:
-        st.subheader("Record Uniform Sale")
-        df_cats = pd.read_sql("SELECT id, category FROM uniform_categories", conn)
-        selected_cat_id = st.selectbox("Select Category to Sell", df_cats["category"], format_func=lambda x: x)
-        cat_id = df_cats[df_cats["category"] == selected_cat_id]["id"].iloc[0] if selected_cat_id else None
+    with tab_sale:
+        st.subheader("Sell Uniforms (Auto-reduces stock & adds income)")
+        df_cats = pd.read_sql("SELECT id, category FROM uniform_categories ORDER BY category", conn)
+        selected_cat = st.selectbox("Select Category to Sell", df_cats["category"])
+        cat_id = df_cats[df_cats["category"] == selected_cat]["id"].iloc[0]
 
-        if cat_id:
-            current_stock = conn.execute("SELECT stock FROM uniforms WHERE category_id = ?", (cat_id,)).fetchone()[0] or 0
-            unit_price = conn.execute("SELECT unit_price FROM uniforms WHERE category_id = ?", (cat_id,)).fetchone()[0] or 0.0
-            st.write(f"Current stock: {current_stock}")
-            st.write(f"Unit price: USh {unit_price:,.0f}")
+        current = conn.execute("SELECT stock, unit_price FROM uniforms WHERE category_id = ?", (cat_id,)).fetchone()
+        curr_stock, unit_price = current if current else (0, 0.0)
 
-            with st.form("sell_uniform", clear_on_submit=True):
-                quantity = st.number_input("Quantity to Sell", min_value=1, max_value=current_stock, value=1)
-                sale_date = st.date_input("Sale Date", datetime.today())
+        st.write(f"**Available stock:** {curr_stock}")
+        st.write(f"**Unit price:** USh {unit_price:,.0f}")
 
-                if st.form_submit_button("Record Sale"):
-                    if quantity > current_stock:
-                        st.error("Not enough stock")
-                    else:
-                        total_amount = quantity * unit_price
-                        # Update stock
-                        cursor.execute("UPDATE uniforms SET stock = stock - ? WHERE category_id = ?", (quantity, cat_id))
-                        # Add to incomes
-                        cursor.execute("INSERT INTO incomes (date, amount, source) VALUES (?, ?, ?)", (sale_date, total_amount, 'Uniform Sale'))
-                        conn.commit()
-                        st.success(f"Sold {quantity} items for USh {total_amount:,.0f}. Income recorded.")
+        with st.form("sell_uniform", clear_on_submit=True):
+            quantity = st.number_input("Quantity to Sell", min_value=1, max_value=curr_stock or 1, value=1)
+            sale_date = st.date_input("Sale Date", datetime.today())
+
+            if st.form_submit_button("Record Sale"):
+                if quantity > curr_stock:
+                    st.error("Not enough stock available")
+                else:
+                    total = quantity * unit_price
+                    cursor.execute("UPDATE uniforms SET stock = stock - ? WHERE category_id = ?", (quantity, cat_id))
+                    cursor.execute("INSERT INTO incomes (date, amount, source) VALUES (?, ?, ?)",
+                                   (sale_date, total, f"Uniform Sale - {selected_cat}"))
+                    conn.commit()
+                    st.success(f"Sold {quantity} × {selected_cat} for USh {total:,.0f}. Income recorded.")
 
 # ─── Finances ──────────────────────────────────────────────────────────
 elif page == "Finances":
     st.header("Finances")
 
-    tab_exp, tab_inc, tab_cat = st.tabs(["Expenses", "Incomes", "Expense Categories"])
+    tab_exp, tab_inc, tab_cats = st.tabs(["Add Expense", "View Incomes", "Expense Categories"])
 
     with tab_exp:
-        st.subheader("Add Expense")
-        df_cats = pd.read_sql("SELECT id, name FROM expense_categories", conn)
-        selected_cat = st.selectbox("Select Category", df_cats["name"], format_func=lambda x: x)
-        cat_id = df_cats[df_cats["name"] == selected_cat]["id"].iloc[0] if selected_cat else None
+        df_cats = pd.read_sql("SELECT id, name FROM expense_categories ORDER BY name", conn)
+        selected_cat = st.selectbox("Expense Category", df_cats["name"])
+        cat_id = df_cats[df_cats["name"] == selected_cat]["id"].iloc[0] if not df_cats.empty else None
 
         with st.form("add_expense", clear_on_submit=True):
             date = st.date_input("Date", datetime.today())
             amount = st.number_input("Amount (USh)", min_value=0.0, step=1000.0)
             if st.form_submit_button("Save Expense") and cat_id:
-                cursor.execute("INSERT INTO expenses (date, amount, category_id) VALUES (?, ?, ?)", (date, amount, int(cat_id)))
+                cursor.execute("INSERT INTO expenses (date, amount, category_id) VALUES (?, ?, ?)",
+                               (date, amount, int(cat_id)))
                 conn.commit()
-                st.success("Expense saved")
-
-        st.subheader("Recent Expenses")
-        df_exp = pd.read_sql_query("""
-            SELECT e.date, e.amount, ec.name AS category
-            FROM expenses e LEFT JOIN expense_categories ec ON e.category_id = ec.id
-            ORDER BY e.date DESC LIMIT 10
-        """, conn)
-        st.dataframe(df_exp, use_container_width=True)
+                st.success("Expense recorded")
 
     with tab_inc:
-        st.subheader("Recent Incomes")
-        df_inc = pd.read_sql("SELECT date, amount, source FROM incomes ORDER BY date DESC LIMIT 10", conn)
+        df_inc = pd.read_sql("SELECT date, amount, source FROM incomes ORDER BY date DESC LIMIT 15", conn)
         st.dataframe(df_inc, use_container_width=True)
 
         buf = BytesIO()
         with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
             df_inc.to_excel(writer, sheet_name='Incomes', index=False)
         buf.seek(0)
-        st.download_button("Download Recent Incomes Excel", buf, "incomes.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.download_button("Download Incomes Excel", buf, "cosna_incomes.xlsx",
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-    with tab_cat:
+    with tab_cats:
         st.subheader("Expense Categories")
-        df_cats = pd.read_sql("SELECT name FROM expense_categories", conn)
+        df_cats = pd.read_sql("SELECT name FROM expense_categories ORDER BY name", conn)
         st.dataframe(df_cats, use_container_width=True)
 
-        with st.form("add_category", clear_on_submit=True):
-            new_cat = st.text_input("New Category Name (e.g. Library)")
+        with st.form("add_exp_cat", clear_on_submit=True):
+            new_cat = st.text_input("New Category Name")
             if st.form_submit_button("Add Category") and new_cat:
                 try:
                     cursor.execute("INSERT INTO expense_categories (name) VALUES (?)", (new_cat,))
                     conn.commit()
-                    st.success(f"Category {new_cat} added")
+                    st.success(f"Category '{new_cat}' added")
                 except sqlite3.IntegrityError:
                     st.error("Category already exists")
 
@@ -319,7 +309,7 @@ elif page == "Financial Report":
     end = col2.date_input("End Date", datetime.today())
 
     if st.button("Generate Report"):
-        exp = pd.read_sql_query("SELECT * FROM expenses WHERE date BETWEEN ? AND ?", conn, params=(start, end))
+        exp = pd.read_sql_query("SELECT e.date, e.amount, ec.name AS category FROM expenses e JOIN expense_categories ec ON e.category_id = ec.id WHERE e.date BETWEEN ? AND ?", conn, params=(start, end))
         inc = pd.read_sql_query("SELECT * FROM incomes WHERE date BETWEEN ? AND ?", conn, params=(start, end))
 
         total_exp = exp["amount"].sum()
@@ -334,20 +324,20 @@ elif page == "Financial Report":
         tab1.dataframe(inc)
         tab2.dataframe(exp)
 
-        # PDF Export
+        # PDF
         pdf_buf = BytesIO()
         pdf = canvas.Canvas(pdf_buf, pagesize=letter)
         pdf.drawString(100, 750, "COSNA School Financial Report")
         pdf.drawString(100, 730, f"Period: {start} to {end}")
         y = 680
-        pdf.drawString(100, y, f"Total Income: USh {total_inc:,.0f}"); y -= 40
-        pdf.drawString(100, y, f"Total Expenses: USh {total_exp:,.0f}"); y -= 40
+        pdf.drawString(100, y, f"Income: USh {total_inc:,.0f}"); y -= 40
+        pdf.drawString(100, y, f"Expenses: USh {total_exp:,.0f}"); y -= 40
         pdf.drawString(100, y, f"Balance: USh {balance:,.0f}")
         pdf.save()
         pdf_buf.seek(0)
-        st.download_button("Download PDF", pdf_buf, f"report_{start}_to_{end}.pdf", "application/pdf")
+        st.download_button("Download PDF", pdf_buf, f"cosna_report_{start}_to_{end}.pdf", "application/pdf")
 
-        # Excel Export
+        # Excel
         excel_buf = BytesIO()
         with pd.ExcelWriter(excel_buf, engine='xlsxwriter') as writer:
             inc.to_excel(writer, sheet_name="Incomes", index=False)
@@ -357,7 +347,7 @@ elif page == "Financial Report":
                 "Value (USh)": [total_inc, total_exp, balance]
             }).to_excel(writer, sheet_name="Summary", index=False)
         excel_buf.seek(0)
-        st.download_button("Download Excel Report", excel_buf, f"financial_{start}_to_{end}.xlsx",
+        st.download_button("Download Excel Report", excel_buf, f"cosna_financial_{start}_to_{end}.xlsx",
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-st.sidebar.info("Logged in as admin – data saved in SQLite (persistent on Streamlit Cloud)")
+st.sidebar.info("Logged in as admin – data saved in SQLite (persistent)")
