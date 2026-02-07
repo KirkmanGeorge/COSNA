@@ -5,7 +5,6 @@ from datetime import datetime
 from io import BytesIO
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
-import time  # for small delay after commit
 
 # ─── Page config ───────────────────────────────────────────────────────
 st.set_page_config(page_title="COSNA School Management", layout="wide", initial_sidebar_state="expanded")
@@ -65,7 +64,7 @@ def initialize_database():
                        date DATE, amount REAL, source TEXT)''')
     conn.commit()
 
-    # Seed uniform categories
+    # Seed uniform categories (only if not exist)
     uniform_seeds = [
         ('Boys Main Shorts', 'boys', 0),
         ('Button Shirts Main', 'shared', 1),
@@ -192,12 +191,10 @@ elif page == "Uniforms":
                 new_price = st.number_input("New Unit Price (USh)", min_value=0.0, value=curr_price, step=500.0)
 
                 if st.form_submit_button("Update"):
-                    cursor.execute("UPDATE uniforms SET stock = ?, unit_price = ? WHERE category_id = ?",
-                                   (new_stock, new_price, cat_id))
+                    cursor.execute("UPDATE uniforms SET stock = ?, unit_price = ? WHERE category_id = ?", (new_stock, new_price, cat_id))
                     conn.commit()
-                    time.sleep(0.5)  # Small delay to ensure DB flush
-                    st.success(f"Updated to {new_stock} items at USh {new_price:,.0f}")
-                    st.rerun()  # Force full refresh
+                    st.success("Inventory updated")
+                    st.rerun()
 
     with tab_sale:
         df_cats = pd.read_sql("SELECT id, category FROM uniform_categories ORDER BY category", conn)
@@ -224,9 +221,8 @@ elif page == "Uniforms":
                         cursor.execute("INSERT INTO incomes (date, amount, source) VALUES (?, ?, ?)",
                                        (sale_date, total_amount, f"Uniform Sale - {selected_cat}"))
                         conn.commit()
-                        time.sleep(0.5)  # Ensure DB writes are visible
                         st.success(f"Sold {quantity} items for USh {total_amount:,.0f}. Income recorded.")
-                        st.rerun()  # Refresh inventory view
+                        st.rerun()
 
 # ─── Finances ──────────────────────────────────────────────────────────
 elif page == "Finances":
@@ -272,6 +268,13 @@ elif page == "Finances":
         df_inc = pd.read_sql("SELECT date, amount, source FROM incomes ORDER BY date DESC LIMIT 10", conn)
         st.dataframe(df_inc, use_container_width=True)
 
+        buf = BytesIO()
+        with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+            df_inc.to_excel(writer, sheet_name='Incomes', index=False)
+        buf.seek(0)
+        st.download_button("Download Recent Incomes Excel", buf, "cosna_incomes.xlsx",
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
     with tab_cat:
         st.subheader("Expense Categories")
         df_cats = pd.read_sql("SELECT name FROM expense_categories ORDER BY name", conn)
@@ -312,6 +315,7 @@ elif page == "Financial Report":
         tab1.dataframe(inc)
         tab2.dataframe(exp)
 
+        # PDF Export
         pdf_buf = BytesIO()
         pdf = canvas.Canvas(pdf_buf, pagesize=letter)
         pdf.drawString(100, 750, "COSNA School Financial Report")
@@ -323,5 +327,18 @@ elif page == "Financial Report":
         pdf.save()
         pdf_buf.seek(0)
         st.download_button("Download PDF", pdf_buf, f"report_{start}_to_{end}.pdf", "application/pdf")
+
+        # Excel Export
+        excel_buf = BytesIO()
+        with pd.ExcelWriter(excel_buf, engine='xlsxwriter') as writer:
+            inc.to_excel(writer, sheet_name="Incomes", index=False)
+            exp.to_excel(writer, sheet_name="Expenses", index=False)
+            pd.DataFrame({
+                "Metric": ["Total Income", "Total Expenses", "Balance"],
+                "Value (USh)": [total_inc, total_exp, balance]
+            }).to_excel(writer, sheet_name="Summary", index=False)
+        excel_buf.seek(0)
+        st.download_button("Download Excel Report", excel_buf, f"financial_{start}_to_{end}.xlsx",
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 st.sidebar.info("Logged in as admin – data saved in SQLite (persistent on Streamlit Cloud)")
