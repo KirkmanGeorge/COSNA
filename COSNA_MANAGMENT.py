@@ -24,10 +24,10 @@ if not st.session_state.logged_in:
     if st.button("Login"):
         if username == "admin" and password == "costa2026":
             st.session_state.logged_in = True
-            st.success("Logged in!")
+            st.success("Logged in successfully!")
             st.rerun()
         else:
-            st.error("Invalid credentials")
+            st.error("Invalid username or password")
     st.stop()
 
 with st.sidebar:
@@ -35,12 +35,13 @@ with st.sidebar:
         st.session_state.logged_in = False
         st.rerun()
 
-# ─── Database ──────────────────────────────────────────────────────────
+# ─── Database connection ───────────────────────────────────────────────
 conn = sqlite3.connect('cosna_school.db', check_same_thread=False)
 cursor = conn.cursor()
 
-# ─── Initialize database ───────────────────────────────────────────────
+# ─── Initialize database (tables + seed data) ──────────────────────────
 def initialize_database():
+    # Tables
     cursor.execute('''CREATE TABLE IF NOT EXISTS classes (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS students (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, age INTEGER, enrollment_date DATE, class_id INTEGER, FOREIGN KEY(class_id) REFERENCES classes(id))''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS uniform_categories (id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT UNIQUE, gender TEXT, is_shared INTEGER DEFAULT 0)''')
@@ -50,6 +51,7 @@ def initialize_database():
     cursor.execute('''CREATE TABLE IF NOT EXISTS incomes (id INTEGER PRIMARY KEY AUTOINCREMENT, date DATE, amount REAL, source TEXT)''')
     conn.commit()
 
+    # Seed uniform categories
     uniform_seeds = [
         ('Boys Main Shorts', 'boys', 0),
         ('Button Shirts Main', 'shared', 1),
@@ -67,6 +69,7 @@ def initialize_database():
             cursor.execute("INSERT INTO uniforms (category_id, stock, unit_price) VALUES (?, 0, 0.0)", (cat_id,))
             conn.commit()
 
+    # Seed expense categories
     expense_seeds = ['Medical', 'Salaries', 'Utilities', 'Maintenance', 'Supplies', 'Transport', 'Events']
     for cat in expense_seeds:
         cursor.execute("SELECT id FROM expense_categories WHERE name = ?", (cat,))
@@ -170,7 +173,8 @@ elif page == "Uniforms":
         with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
             df.to_excel(writer, sheet_name='Uniform Inventory', index=False)
         buf.seek(0)
-        st.download_button("Download Inventory Excel", buf, "cosna_uniforms.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.download_button("Download Inventory Excel", buf, "cosna_uniforms.xlsx",
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     with tab_update:
         df_cats = pd.read_sql("SELECT id, category FROM uniform_categories ORDER BY category", conn)
@@ -192,8 +196,9 @@ elif page == "Uniforms":
                     cursor.execute("UPDATE uniforms SET stock = ?, unit_price = ? WHERE category_id = ?",
                                    (new_stock, new_price, cat_id))
                     conn.commit()
-                    time.sleep(1.5)  # Increased delay for cloud sync
-                    st.success(f"**Updated successfully!** Now {new_stock} items at USh {new_price:,.0f}")
+                    time.sleep(1.5)
+                    updated_stock = conn.execute("SELECT stock FROM uniforms WHERE category_id = ?", (cat_id,)).fetchone()[0]
+                    st.success(f"**Updated!** Database now shows: {updated_stock} items at USh {new_price:,.0f}")
                     st.rerun()
 
     with tab_sale:
