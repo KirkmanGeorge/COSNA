@@ -41,7 +41,6 @@ cursor = conn.cursor()
 
 # ─── Initialize database (tables + seed data) ──────────────────────────
 def initialize_database():
-    # Tables
     cursor.execute('''CREATE TABLE IF NOT EXISTS classes (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS students (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, age INTEGER, enrollment_date DATE, class_id INTEGER, FOREIGN KEY(class_id) REFERENCES classes(id))''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS uniform_categories (id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT UNIQUE, gender TEXT, is_shared INTEGER DEFAULT 0)''')
@@ -135,7 +134,7 @@ elif page == "Students":
                                (name, age, enroll_date, int(cls_id)))
                 conn.commit()
                 time.sleep(1.2)
-                st.success("Student added")
+                st.success("Student added successfully")
                 st.rerun()
 
     with st.expander("Add New Class"):
@@ -149,7 +148,7 @@ elif page == "Students":
                     st.success(f"Class '{new_cls}' created")
                     st.rerun()
                 except sqlite3.IntegrityError:
-                    st.error("Class already exists")
+                    st.error("Class name already exists")
 
 # ─── Uniforms ──────────────────────────────────────────────────────────
 elif page == "Uniforms":
@@ -182,6 +181,13 @@ elif page == "Uniforms":
         cat_id = df_cats[df_cats["category"] == selected_cat]["id"].iloc[0] if selected_cat else None
 
         if cat_id:
+            # Ensure uniforms row exists
+            cursor.execute("SELECT id FROM uniforms WHERE category_id = ?", (cat_id,))
+            if not cursor.fetchone():
+                cursor.execute("INSERT INTO uniforms (category_id, stock, unit_price) VALUES (?, 0, 0.0)", (cat_id,))
+                conn.commit()
+                st.info("Created missing stock record for this category")
+
             current = conn.execute("SELECT stock, unit_price FROM uniforms WHERE category_id = ?", (cat_id,)).fetchone()
             curr_stock, curr_price = current if current else (0, 0.0)
 
@@ -197,8 +203,10 @@ elif page == "Uniforms":
                                    (new_stock, new_price, cat_id))
                     conn.commit()
                     time.sleep(1.5)
-                    updated_stock = conn.execute("SELECT stock FROM uniforms WHERE category_id = ?", (cat_id,)).fetchone()[0]
-                    st.success(f"**Updated!** Database now shows: {updated_stock} items at USh {new_price:,.0f}")
+
+                    updated = conn.execute("SELECT stock FROM uniforms WHERE category_id = ?", (cat_id,)).fetchone()
+                    updated_stock = updated[0] if updated else "NOT FOUND"
+                    st.success(f"**Update successful!** Database now shows stock = {updated_stock}")
                     st.rerun()
 
     with tab_sale:
@@ -207,6 +215,12 @@ elif page == "Uniforms":
         cat_id = df_cats[df_cats["category"] == selected_cat]["id"].iloc[0] if selected_cat else None
 
         if cat_id:
+            # Ensure row exists
+            cursor.execute("SELECT id FROM uniforms WHERE category_id = ?", (cat_id,))
+            if not cursor.fetchone():
+                cursor.execute("INSERT INTO uniforms (category_id, stock, unit_price) VALUES (?, 0, 0.0)", (cat_id,))
+                conn.commit()
+
             current = conn.execute("SELECT stock, unit_price FROM uniforms WHERE category_id = ?", (cat_id,)).fetchone()
             curr_stock, unit_price = current if current else (0, 0.0)
 
