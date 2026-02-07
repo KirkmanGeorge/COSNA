@@ -5,6 +5,7 @@ from datetime import datetime
 from io import BytesIO
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
+import time  # for small delay after commit
 
 # ─── Page config ───────────────────────────────────────────────────────
 st.set_page_config(page_title="COSNA School Management", layout="wide", initial_sidebar_state="expanded")
@@ -137,37 +138,6 @@ elif page == "Students":
             buf.seek(0)
             st.download_button("Download Filtered Students Excel", buf, "cosna_students.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-        # Edit/Delete
-        st.subheader("Edit or Delete Student")
-        student_ids = pd.read_sql("SELECT id, name FROM students ORDER BY name", conn)
-        selected_student = st.selectbox("Select Student", student_ids["name"], format_func=lambda x: x)
-        student_id = student_ids[student_ids["name"] == selected_student]["id"].iloc[0] if selected_student else None
-
-        if student_id:
-            student_data = conn.execute("SELECT name, age, enrollment_date, class_id FROM students WHERE id = ?", (student_id,)).fetchone()
-            with st.form("edit_student", clear_on_submit=True):
-                new_name = st.text_input("Name", student_data[0])
-                new_age = st.number_input("Age", value=student_data[1])
-                new_enroll = st.date_input("Enrollment Date", student_data[2])
-                cls_df = pd.read_sql("SELECT id, name FROM classes ORDER BY name", conn)
-                current_cls_name = conn.execute("SELECT name FROM classes WHERE id = ?", (student_data[3],)).fetchone()[0]
-                new_cls_name = st.selectbox("Class", cls_df["name"], index=cls_df[cls_df["name"] == current_cls_name].index[0] if current_cls_name in cls_df["name"].tolist() else 0)
-                new_cls_id = cls_df[cls_df["name"] == new_cls_name]["id"].iloc[0]
-
-                col_update, col_delete = st.columns(2)
-                with col_update:
-                    if st.form_submit_button("Update"):
-                        cursor.execute("UPDATE students SET name = ?, age = ?, enrollment_date = ?, class_id = ? WHERE id = ?", (new_name, new_age, new_enroll, new_cls_id, student_id))
-                        conn.commit()
-                        st.success("Updated")
-                        st.rerun()
-                with col_delete:
-                    if st.form_submit_button("Delete"):
-                        cursor.execute("DELETE FROM students WHERE id = ?", (student_id,))
-                        conn.commit()
-                        st.success("Deleted")
-                        st.rerun()
-
     with tab_add:
         with st.form("add_student", clear_on_submit=True):
             name = st.text_input("Full Name")
@@ -183,18 +153,6 @@ elif page == "Students":
                 conn.commit()
                 st.success("Student added")
                 st.rerun()
-
-    with st.expander("Add New Class"):
-        with st.form("add_class", clear_on_submit=True):
-            new_cls = st.text_input("Class Name")
-            if st.form_submit_button("Create") and new_cls:
-                try:
-                    cursor.execute("INSERT INTO classes (name) VALUES (?)", (new_cls,))
-                    conn.commit()
-                    st.success("Class created")
-                    st.rerun()
-                except sqlite3.IntegrityError:
-                    st.error("Class already exists")
 
 # ─── Uniforms ──────────────────────────────────────────────────────────
 elif page == "Uniforms":
@@ -234,10 +192,12 @@ elif page == "Uniforms":
                 new_price = st.number_input("New Unit Price (USh)", min_value=0.0, value=curr_price, step=500.0)
 
                 if st.form_submit_button("Update"):
-                    cursor.execute("UPDATE uniforms SET stock = ?, unit_price = ? WHERE category_id = ?", (new_stock, new_price, cat_id))
+                    cursor.execute("UPDATE uniforms SET stock = ?, unit_price = ? WHERE category_id = ?",
+                                   (new_stock, new_price, cat_id))
                     conn.commit()
-                    st.success("Inventory updated")
-                    st.rerun()  # Refresh to reflect changes in inventory view
+                    time.sleep(0.5)  # Small delay to ensure DB flush
+                    st.success(f"Updated to {new_stock} items at USh {new_price:,.0f}")
+                    st.rerun()  # Force full refresh
 
     with tab_sale:
         df_cats = pd.read_sql("SELECT id, category FROM uniform_categories ORDER BY category", conn)
@@ -264,8 +224,9 @@ elif page == "Uniforms":
                         cursor.execute("INSERT INTO incomes (date, amount, source) VALUES (?, ?, ?)",
                                        (sale_date, total_amount, f"Uniform Sale - {selected_cat}"))
                         conn.commit()
+                        time.sleep(0.5)  # Ensure DB writes are visible
                         st.success(f"Sold {quantity} items for USh {total_amount:,.0f}. Income recorded.")
-                        st.rerun()  # Refresh to reflect updated stock
+                        st.rerun()  # Refresh inventory view
 
 # ─── Finances ──────────────────────────────────────────────────────────
 elif page == "Finances":
@@ -311,13 +272,6 @@ elif page == "Finances":
         df_inc = pd.read_sql("SELECT date, amount, source FROM incomes ORDER BY date DESC LIMIT 10", conn)
         st.dataframe(df_inc, use_container_width=True)
 
-        buf = BytesIO()
-        with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-            df_inc.to_excel(writer, sheet_name='Incomes', index=False)
-        buf.seek(0)
-        st.download_button("Download Recent Incomes Excel", buf, "cosna_incomes.xlsx",
-                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
     with tab_cat:
         st.subheader("Expense Categories")
         df_cats = pd.read_sql("SELECT name FROM expense_categories ORDER BY name", conn)
@@ -358,7 +312,6 @@ elif page == "Financial Report":
         tab1.dataframe(inc)
         tab2.dataframe(exp)
 
-        # PDF Export
         pdf_buf = BytesIO()
         pdf = canvas.Canvas(pdf_buf, pagesize=letter)
         pdf.drawString(100, 750, "COSNA School Financial Report")
@@ -370,18 +323,5 @@ elif page == "Financial Report":
         pdf.save()
         pdf_buf.seek(0)
         st.download_button("Download PDF", pdf_buf, f"report_{start}_to_{end}.pdf", "application/pdf")
-
-        # Excel Export
-        excel_buf = BytesIO()
-        with pd.ExcelWriter(excel_buf, engine='xlsxwriter') as writer:
-            inc.to_excel(writer, sheet_name="Incomes", index=False)
-            exp.to_excel(writer, sheet_name="Expenses", index=False)
-            pd.DataFrame({
-                "Metric": ["Total Income", "Total Expenses", "Balance"],
-                "Value (USh)": [total_inc, total_exp, balance]
-            }).to_excel(writer, sheet_name="Summary", index=False)
-        excel_buf.seek(0)
-        st.download_button("Download Excel Report", excel_buf, f"financial_{start}_to_{end}.xlsx",
-                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 st.sidebar.info("Logged in as admin – data saved in SQLite (persistent on Streamlit Cloud)")
