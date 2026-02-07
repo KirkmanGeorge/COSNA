@@ -29,35 +29,35 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS expenses (id INTEGER PRIMARY KEY AU
 cursor.execute('''CREATE TABLE IF NOT EXISTS incomes (id INTEGER PRIMARY KEY AUTOINCREMENT, date DATE, amount REAL, source TEXT)''')
 conn.commit()
 
-# ─── Authenticator – use auto-hash + correct constructor ───────────────
+# ─── Authenticator setup ───────────────────────────────────────────────
 if 'authenticator' not in st.session_state:
-    # Plain text credentials – library will auto-hash on first run
     credentials = {
         'usernames': {
             'admin': {
                 'name': 'Administrator',
-                'password': 'costa2026',  # ← plain text here
+                'password': 'costa2026',  # plain text – will be auto-hashed
                 'email': 'admin@costa.school'
             }
         }
     }
 
-    # Modern / compatible constructor
-    authenticator = stauth.Authenticate(
+    st.session_state.authenticator = stauth.Authenticate(
         credentials=credentials,
         cookie_name='costa_school_cookie',
         cookie_key='costa_school_secret_2026_change_this',
         cookie_expiry_days=30,
-        auto_hash=True  # ← key: auto-hash plain passwords
+        auto_hash=True
     )
 
-    st.session_state.authenticator = authenticator
-    st.session_state.credentials = credentials  # for later updates
+    st.session_state.credentials = credentials
 
 authenticator = st.session_state.authenticator
 
-# ─── Login ─────────────────────────────────────────────────────────────
-name, authentication_status, username = authenticator.login('Login', 'main')
+# ─── Login – use KEYWORD arguments for location ────────────────────────
+name, authentication_status, username = authenticator.login(
+    form_name='Login',
+    location='main'   # ← FIXED: keyword, not positional
+)
 
 if authentication_status:
     st.session_state.logged_in = True
@@ -70,23 +70,22 @@ if authentication_status:
         with st.expander("Change my password"):
             try:
                 if authenticator.reset_password(username):
-                    st.success('Password changed!')
-                    # Sync if needed (auto-hash handles it)
+                    st.success('Password changed successfully')
             except Exception as e:
                 st.error(str(e))
 
 elif authentication_status is False:
-    st.error('Username or password incorrect')
+    st.error('Username or password is incorrect')
 elif authentication_status is None:
-    st.warning('Enter username and password')
+    st.warning('Please enter your username and password')
 
 # Forgot password – shows new password on screen
 try:
-    username_forgot, email_forgot, random_pw = authenticator.forgot_password('main')
+    username_forgot, email_forgot, random_pw = authenticator.forgot_password('Forgot password?')
     if username_forgot:
-        st.success(f"**New temp password for {username_forgot}:**  {random_pw}")
-        st.info("Copy now — it disappears after refresh.")
-        st.warning("Log in → sidebar → Change my password")
+        st.success(f"**New temporary password for {username_forgot}:**  {random_pw}")
+        st.info("Copy this immediately — it disappears after refresh.")
+        st.warning("Log in now, then change it via sidebar → Change my password")
 except Exception as e:
     if "No username provided" not in str(e):
         st.error(f"Forgot password error: {str(e)}")
@@ -97,7 +96,7 @@ if not authentication_status:
 # ─── Navigation ────────────────────────────────────────────────────────
 page = st.sidebar.radio("Menu", ["Dashboard", "Students", "Uniforms", "Finances", "Financial Report"])
 
-# Dashboard
+# ─── Dashboard ─────────────────────────────────────────────────────────
 if page == "Dashboard":
     st.header("Overview")
     col1, col2, col3 = st.columns(3)
@@ -107,18 +106,17 @@ if page == "Dashboard":
     exp = conn.execute("SELECT SUM(amount) FROM expenses").fetchone()[0] or 0
     col3.metric("Net Balance", f"USh {inc - exp:,.0f}")
 
-# Students (example – keep your full logic)
+# ─── Students (example – expand as needed) ─────────────────────────────
 elif page == "Students":
     st.header("Students")
-    # Your existing code for tabs, add, export, etc.
-    # ... paste your students section here if needed ...
+    # View / add / export code here (from your previous versions)
 
-# Uniforms (placeholder – add your code)
+# ─── Uniforms ──────────────────────────────────────────────────────────
 elif page == "Uniforms":
     st.header("Uniforms")
     # Your code ...
 
-# Finances
+# ─── Finances ──────────────────────────────────────────────────────────
 elif page == "Finances":
     st.header("Income & Expenses")
     col1, col2 = st.columns(2)
@@ -143,7 +141,7 @@ elif page == "Finances":
                 conn.commit()
                 st.success("Saved")
 
-# Financial Report
+# ─── Financial Report ──────────────────────────────────────────────────
 elif page == "Financial Report":
     st.header("Financial Report")
     col1, col2 = st.columns(2)
@@ -161,6 +159,6 @@ elif page == "Financial Report":
         tab1, tab2 = st.tabs(["Incomes", "Expenses"])
         tab1.dataframe(inc)
         tab2.dataframe(exp)
-        # PDF + Excel export (keep your existing code here if you have it)
+        # Add your PDF / Excel export code here if needed
 
-st.sidebar.info("SQLite persistent on Streamlit Cloud")
+st.sidebar.info("SQLite database – persistent on Streamlit Cloud")
