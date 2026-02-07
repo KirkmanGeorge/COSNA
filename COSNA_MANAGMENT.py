@@ -43,20 +43,35 @@ def get_db_connection():
 conn = get_db_connection()
 cursor = conn.cursor()
 
-# Create tables
-cursor.execute('''CREATE TABLE IF NOT EXISTS classes (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS students (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, age INTEGER, enrollment_date DATE, class_id INTEGER, FOREIGN KEY(class_id) REFERENCES classes(id))''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS uniform_categories (id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT UNIQUE, gender TEXT, is_shared INTEGER DEFAULT 0)''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS uniforms (id INTEGER PRIMARY KEY AUTOINCREMENT, category_id INTEGER UNIQUE, stock INTEGER DEFAULT 0, unit_price REAL DEFAULT 0.0, FOREIGN KEY(category_id) REFERENCES uniform_categories(id))''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS expense_categories (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, date DATE, amount REAL, category_id INTEGER, FOREIGN KEY(category_id) REFERENCES expense_categories(id))''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS incomes (id INTEGER PRIMARY KEY AUTOINCREMENT, date DATE, amount REAL, source TEXT)''')
-conn.commit()
-
-# ─── One-time initialization (cached) ──────────────────────────────────
+# ─── One-time DB initialization (tables + seed data) ───────────────────
 @st.cache_resource
 def initialize_database():
-    # Uniform categories
+    # Create tables
+    cursor.execute('''CREATE TABLE IF NOT EXISTS classes
+                      (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS students
+                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                       name TEXT, age INTEGER, enrollment_date DATE,
+                       class_id INTEGER, FOREIGN KEY(class_id) REFERENCES classes(id))''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS uniform_categories
+                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                       category TEXT UNIQUE, gender TEXT, is_shared INTEGER DEFAULT 0)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS uniforms
+                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                       category_id INTEGER UNIQUE, stock INTEGER DEFAULT 0, unit_price REAL DEFAULT 0.0,
+                       FOREIGN KEY(category_id) REFERENCES uniform_categories(id))''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS expense_categories
+                      (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS expenses
+                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                       date DATE, amount REAL, category_id INTEGER,
+                       FOREIGN KEY(category_id) REFERENCES expense_categories(id))''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS incomes
+                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                       date DATE, amount REAL, source TEXT)''')
+    conn.commit()
+
+    # Seed uniform categories
     uniform_seeds = [
         ('Boys Main Shorts', 'boys', 0),
         ('Button Shirts Main', 'shared', 1),
@@ -66,12 +81,12 @@ def initialize_database():
         ('Girls Main Dresses', 'girls', 0)
     ]
 
-    for cat_name, gender, is_shared in uniform_seeds:
+    for cat_name, gender, shared in uniform_seeds:
         cursor.execute("SELECT id FROM uniform_categories WHERE category = ?", (cat_name,))
         if not cursor.fetchone():
             cursor.execute(
                 "INSERT INTO uniform_categories (category, gender, is_shared) VALUES (?, ?, ?)",
-                (cat_name, gender, is_shared)
+                (cat_name, gender, shared)
             )
             conn.commit()
             cat_id = cursor.lastrowid
@@ -81,7 +96,7 @@ def initialize_database():
             )
             conn.commit()
 
-    # Expense categories
+    # Seed expense categories
     expense_seeds = ['Medical', 'Salaries', 'Utilities', 'Maintenance', 'Supplies', 'Transport', 'Events']
     for cat in expense_seeds:
         cursor.execute("SELECT id FROM expense_categories WHERE name = ?", (cat,))
@@ -89,9 +104,9 @@ def initialize_database():
             cursor.execute("INSERT INTO expense_categories (name) VALUES (?)", (cat,))
             conn.commit()
 
-    return "Initialization complete"
+    return "DB initialized"
 
-# Run initialization once (cached)
+# Run init once
 initialize_database()
 
 # ─── Navigation ────────────────────────────────────────────────────────
@@ -114,22 +129,23 @@ elif page == "Students":
     tab_view, tab_add = st.tabs(["View & Export", "Add Student"])
 
     with tab_view:
-        classes = ["All"] + pd.read_sql("SELECT name FROM classes ORDER BY name", conn)['name'].tolist()
-        selected = st.selectbox("Class", classes)
+        classes = ["All Classes"] + pd.read_sql("SELECT name FROM classes ORDER BY name", conn)['name'].tolist()
+        selected_class = st.selectbox("Filter by Class", classes)
 
         query = "SELECT s.id, s.name, s.age, s.enrollment_date, c.name AS class_name FROM students s LEFT JOIN classes c ON s.class_id = c.id"
         params = ()
-        if selected != "All":
+        if selected_class != "All Classes":
             query += " WHERE c.name = ?"
-            params = (selected,)
+            params = (selected_class,)
         df = pd.read_sql_query(query, conn, params=params)
         st.dataframe(df, use_container_width=True)
 
-        buf = BytesIO()
-        with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-            df.to_excel(writer, sheet_name='Students', index=False)
-        buf.seek(0)
-        st.download_button("Download", buf, "students.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        if not df.empty:
+            buf = BytesIO()
+            with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+                df.to_excel(writer, sheet_name='Students', index=False)
+            buf.seek(0)
+            st.download_button("Download", buf, "students.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     with tab_add:
         with st.form("add_student", clear_on_submit=True):
@@ -144,7 +160,7 @@ elif page == "Students":
                 cursor.execute("INSERT INTO students (name, age, enrollment_date, class_id) VALUES (?, ?, ?, ?)",
                                (name, age, enroll_date, int(cls_id)))
                 conn.commit()
-                st.success("Added")
+                st.success("Student added")
 
     with st.expander("Add Class"):
         with st.form("add_class", clear_on_submit=True):
@@ -222,6 +238,7 @@ elif page == "Uniforms":
 # ─── Finances ──────────────────────────────────────────────────────────
 elif page == "Finances":
     st.header("Finances")
+
     tab_exp, tab_inc, tab_cat = st.tabs(["Expenses", "Incomes", "Categories"])
 
     with tab_exp:
@@ -252,7 +269,7 @@ elif page == "Finances":
                     cursor.execute("INSERT INTO expense_categories (name) VALUES (?)", (name,))
                     conn.commit()
                     st.success("Added")
-                except:
+                except sqlite3.IntegrityError:
                     st.error("Exists")
 
 # ─── Report ────────────────────────────────────────────────────────────
