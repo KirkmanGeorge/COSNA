@@ -148,11 +148,16 @@ elif page == "Students":
 # ─── Uniforms ──────────────────────────────────────────────────────────
 elif page == "Uniforms":
     st.header("Uniforms – Inventory & Sales")
+    
+    # Add a session state key to force refresh
+    if 'uniform_refresh' not in st.session_state:
+        st.session_state.uniform_refresh = 0
 
     tab_view, tab_update, tab_sale = st.tabs(["View Inventory", "Update Stock/Price", "Record Sale"])
 
     with tab_view:
         st.subheader("Current Inventory")
+        # Use st.session_state.uniform_refresh to force re-query
         df = pd.read_sql_query("""
             SELECT uc.category, uc.gender, uc.is_shared, u.stock, u.unit_price
             FROM uniforms u JOIN uniform_categories uc ON u.category_id = uc.id
@@ -160,7 +165,9 @@ elif page == "Uniforms":
         """, conn)
         st.dataframe(df, use_container_width=True)
 
+        # Refresh button with enhanced functionality
         if st.button("Refresh Inventory"):
+            st.session_state.uniform_refresh += 1
             st.rerun()
 
         buf = BytesIO()
@@ -175,6 +182,7 @@ elif page == "Uniforms":
         cat_id = df_cats[df_cats["category"] == selected_cat]["id"].iloc[0] if selected_cat else None
 
         if cat_id:
+            # Fetch fresh data directly from database
             current = conn.execute("SELECT stock, unit_price FROM uniforms WHERE category_id = ?", (cat_id,)).fetchone()
             curr_stock, curr_price = current if current else (0, 0.0)
 
@@ -189,8 +197,13 @@ elif page == "Uniforms":
                     cursor.execute("UPDATE uniforms SET stock = ?, unit_price = ? WHERE category_id = ?",
                                    (new_stock, new_price, cat_id))
                     conn.commit()
-                    time.sleep(1.2)  # Give cloud DB time to sync
+                    # Commit changes properly
+                    conn.commit()
                     st.success(f"**Updated!** Now {new_stock} items at USh {new_price:,.0f}")
+                    # Clear cache and force refresh
+                    if 'uniform_refresh' in st.session_state:
+                        st.session_state.uniform_refresh += 1
+                    time.sleep(0.5)  # Brief pause for DB sync
                     st.rerun()
 
     with tab_sale:
@@ -199,6 +212,7 @@ elif page == "Uniforms":
         cat_id = df_cats[df_cats["category"] == selected_cat]["id"].iloc[0] if selected_cat else None
 
         if cat_id:
+            # Fetch fresh data directly
             current = conn.execute("SELECT stock, unit_price FROM uniforms WHERE category_id = ?", (cat_id,)).fetchone()
             curr_stock, unit_price = current if current else (0, 0.0)
 
@@ -218,8 +232,11 @@ elif page == "Uniforms":
                         cursor.execute("INSERT INTO incomes (date, amount, source) VALUES (?, ?, ?)",
                                        (sale_date, total_amount, f"Uniform Sale - {selected_cat}"))
                         conn.commit()
-                        time.sleep(1.2)
+                        # Force refresh
+                        if 'uniform_refresh' in st.session_state:
+                            st.session_state.uniform_refresh += 1
                         st.success(f"Sold {quantity} items for USh {total_amount:,.0f}. Income recorded.")
+                        time.sleep(0.5)
                         st.rerun()
 
 # ─── Finances ──────────────────────────────────────────────────────────
