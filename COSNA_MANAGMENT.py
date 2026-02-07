@@ -41,30 +41,16 @@ cursor = conn.cursor()
 
 # ─── Initialize database ───────────────────────────────────────────────
 def initialize_database():
-    cursor.execute('''CREATE TABLE IF NOT EXISTS classes
-                      (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS students
-                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                       name TEXT, age INTEGER, enrollment_date DATE,
-                       class_id INTEGER, FOREIGN KEY(class_id) REFERENCES classes(id))''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS uniform_categories
-                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                       category TEXT UNIQUE, gender TEXT, is_shared INTEGER DEFAULT 0)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS uniforms
-                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                       category_id INTEGER UNIQUE, stock INTEGER DEFAULT 0, unit_price REAL DEFAULT 0.0,
-                       FOREIGN KEY(category_id) REFERENCES uniform_categories(id))''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS expense_categories
-                      (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS expenses
-                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                       date DATE, amount REAL, category_id INTEGER,
-                       FOREIGN KEY(category_id) REFERENCES expense_categories(id))''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS incomes
-                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                       date DATE, amount REAL, source TEXT)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS classes (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS students (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, age INTEGER, enrollment_date DATE, class_id INTEGER, FOREIGN KEY(class_id) REFERENCES classes(id))''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS uniform_categories (id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT UNIQUE, gender TEXT, is_shared INTEGER DEFAULT 0)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS uniforms (id INTEGER PRIMARY KEY AUTOINCREMENT, category_id INTEGER UNIQUE, stock INTEGER DEFAULT 0, unit_price REAL DEFAULT 0.0, FOREIGN KEY(category_id) REFERENCES uniform_categories(id))''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS expense_categories (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, date DATE, amount REAL, category_id INTEGER, FOREIGN KEY(category_id) REFERENCES expense_categories(id))''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS incomes (id INTEGER PRIMARY KEY AUTOINCREMENT, date DATE, amount REAL, source TEXT)''')
     conn.commit()
 
+    # Seed uniforms
     uniform_seeds = [
         ('Boys Main Shorts', 'boys', 0),
         ('Button Shirts Main', 'shared', 1),
@@ -73,21 +59,16 @@ def initialize_database():
         ('Shared Sports T-Shirts', 'shared', 1),
         ('Girls Main Dresses', 'girls', 0)
     ]
-    for cat_name, gender, shared in uniform_seeds:
-        cursor.execute("SELECT id FROM uniform_categories WHERE category = ?", (cat_name,))
+    for name, gender, shared in uniform_seeds:
+        cursor.execute("SELECT id FROM uniform_categories WHERE category = ?", (name,))
         if not cursor.fetchone():
-            cursor.execute(
-                "INSERT INTO uniform_categories (category, gender, is_shared) VALUES (?, ?, ?)",
-                (cat_name, gender, shared)
-            )
+            cursor.execute("INSERT INTO uniform_categories (category, gender, is_shared) VALUES (?, ?, ?)", (name, gender, shared))
             conn.commit()
             cat_id = cursor.lastrowid
-            cursor.execute(
-                "INSERT INTO uniforms (category_id, stock, unit_price) VALUES (?, 0, 0.0)",
-                (cat_id,)
-            )
+            cursor.execute("INSERT INTO uniforms (category_id, stock, unit_price) VALUES (?, 0, 0.0)", (cat_id,))
             conn.commit()
 
+    # Seed expenses
     expense_seeds = ['Medical', 'Salaries', 'Utilities', 'Maintenance', 'Supplies', 'Transport', 'Events']
     for cat in expense_seeds:
         cursor.execute("SELECT id FROM expense_categories WHERE name = ?", (cat,))
@@ -137,7 +118,7 @@ elif page == "Students":
             st.download_button("Download Filtered Students Excel", buf, "cosna_students.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     with tab_add:
-        with st.form("add_student", clear_on_submit=True):
+        with st.form("add_student"):
             name = st.text_input("Full Name")
             age = st.number_input("Age", 5, 30, 10)
             enroll_date = st.date_input("Enrollment Date", datetime.today())
@@ -152,6 +133,18 @@ elif page == "Students":
                 st.success("Student added")
                 st.rerun()
 
+    with st.expander("Add New Class"):
+        with st.form("add_class"):
+            new_cls = st.text_input("Class Name")
+            if st.form_submit_button("Create Class") and new_cls:
+                try:
+                    cursor.execute("INSERT INTO classes (name) VALUES (?)", (new_cls,))
+                    conn.commit()
+                    st.success(f"Class '{new_cls}' created")
+                    st.rerun()
+                except sqlite3.IntegrityError:
+                    st.error("Class already exists")
+
 # ─── Uniforms ──────────────────────────────────────────────────────────
 elif page == "Uniforms":
     st.header("Uniforms – Inventory & Sales")
@@ -160,7 +153,6 @@ elif page == "Uniforms":
 
     with tab_view:
         st.subheader("Current Inventory")
-        # Force fresh query
         df = pd.read_sql_query("""
             SELECT uc.category, uc.gender, uc.is_shared, u.stock, u.unit_price
             FROM uniforms u JOIN uniform_categories uc ON u.category_id = uc.id
@@ -168,15 +160,14 @@ elif page == "Uniforms":
         """, conn)
         st.dataframe(df, use_container_width=True)
 
-        if st.button("Refresh Inventory Now"):
+        if st.button("Refresh Inventory"):
             st.rerun()
 
         buf = BytesIO()
         with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
             df.to_excel(writer, sheet_name='Uniform Inventory', index=False)
         buf.seek(0)
-        st.download_button("Download Inventory Excel", buf, "cosna_uniforms.xlsx",
-                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.download_button("Download Inventory Excel", buf, "cosna_uniforms.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     with tab_update:
         df_cats = pd.read_sql("SELECT id, category FROM uniform_categories ORDER BY category", conn)
@@ -198,8 +189,8 @@ elif page == "Uniforms":
                     cursor.execute("UPDATE uniforms SET stock = ?, unit_price = ? WHERE category_id = ?",
                                    (new_stock, new_price, cat_id))
                     conn.commit()
-                    time.sleep(1.0)  # Increased delay for cloud DB flush
-                    st.success(f"**Updated successfully!** Now {new_stock} items at USh {new_price:,.0f}")
+                    time.sleep(1.2)  # Give cloud DB time to sync
+                    st.success(f"**Updated!** Now {new_stock} items at USh {new_price:,.0f}")
                     st.rerun()
 
     with tab_sale:
@@ -227,7 +218,7 @@ elif page == "Uniforms":
                         cursor.execute("INSERT INTO incomes (date, amount, source) VALUES (?, ?, ?)",
                                        (sale_date, total_amount, f"Uniform Sale - {selected_cat}"))
                         conn.commit()
-                        time.sleep(1.0)
+                        time.sleep(1.2)
                         st.success(f"Sold {quantity} items for USh {total_amount:,.0f}. Income recorded.")
                         st.rerun()
 
@@ -242,7 +233,7 @@ elif page == "Finances":
         selected_cat = st.selectbox("Select Category", df_cats["name"])
         cat_id = df_cats[df_cats["name"] == selected_cat]["id"].iloc[0] if not df_cats.empty else None
 
-        with st.form("add_expense", clear_on_submit=True):
+        with st.form("add_expense"):
             date = st.date_input("Date", datetime.today())
             amount = st.number_input("Amount (USh)", min_value=0.0, step=1000.0)
             if st.form_submit_button("Save Expense") and cat_id:
@@ -261,7 +252,7 @@ elif page == "Finances":
 
     with tab_inc:
         st.subheader("Add Income (Fees, Donations, etc.)")
-        with st.form("add_income", clear_on_submit=True):
+        with st.form("add_income"):
             date = st.date_input("Date", datetime.today())
             amount = st.number_input("Amount (USh)", min_value=0.0, step=1000.0)
             source = st.text_input("Source (e.g. Fees, Donations)")
@@ -280,7 +271,7 @@ elif page == "Finances":
         df_cats = pd.read_sql("SELECT name FROM expense_categories ORDER BY name", conn)
         st.dataframe(df_cats, use_container_width=True)
 
-        with st.form("add_category", clear_on_submit=True):
+        with st.form("add_category"):
             new_cat = st.text_input("New Category Name")
             if st.form_submit_button("Add Category") and new_cat:
                 try:
