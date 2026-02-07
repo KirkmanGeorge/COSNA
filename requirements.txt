@@ -2,5 +2,5 @@ streamlit
 pandas
 reportlab
 xlsxwriter
-streamlit-authenticator==0.3.3
+streamlit-authenticator
 pyyaml
