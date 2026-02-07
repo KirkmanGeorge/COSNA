@@ -7,8 +7,8 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
 # ─── Page config ───────────────────────────────────────────────────────
-st.set_page_config(page_title="Costa School Management", layout="wide")
-st.title("Costa School Management System")
+st.set_page_config(page_title="COSNA School Management", layout="wide")
+st.title("C0SNA School Management System")
 st.markdown("Students • Uniforms • Finances • Reports")
 
 # ─── Simple login (session state) ──────────────────────────────────────
