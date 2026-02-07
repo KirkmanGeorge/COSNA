@@ -45,20 +45,21 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS incomes
 
 conn.commit()
 
-# ─── Authenticator setup – modern signature (v0.4+ compatible) ──────────
+# ─── Authenticator setup – latest version compatible ───────────────────
 if 'authenticator' not in st.session_state:
-    # Initial credentials
+    # Hash single password (modern way: .hash() on string, not list)
+    admin_hashed_pw = Hasher('costa2026').hash()   # ← FIXED: string, not ['costa2026']
+
     credentials = {
         'usernames': {
             'admin': {
                 'name': 'Administrator',
-                'password': Hasher(['costa2026']).hash(),  # Modern .hash()
+                'password': admin_hashed_pw,
                 'email': 'admin@costa.school'
             }
         }
     }
 
-    # Modern constructor – no 'key' or 'cookie_name' as separate args
     st.session_state.authenticator = stauth.Authenticate(
         credentials=credentials,
         cookie_name='costa_school_cookie',
@@ -95,15 +96,15 @@ elif authentication_status is False:
 elif authentication_status is None:
     st.warning('Please enter username and password')
 
-# Forgot password – shows new password on screen
+# Forgot password – shows new random password on screen
 try:
     username_forgot, email_forgot, random_pw = authenticator.forgot_password('main')
     if username_forgot:
         st.success(f"**New temporary password for {username_forgot}:**  {random_pw}")
-        st.info("Copy this now – it will disappear after refresh.")
+        st.info("Copy this now – it disappears after refresh.")
         st.warning("Log in, then change it in sidebar → Change my password")
         st.session_state.credentials['usernames'][username_forgot]['password'] = \
-            Hasher([random_pw]).hash()
+            Hasher(random_pw).hash()   # ← FIXED: string input
 except Exception as e:
     if "No username provided" not in str(e):
         st.error(f"Forgot password error: {str(e)}")
