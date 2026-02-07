@@ -45,7 +45,8 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS incomes
 
 conn.commit()
 
-# ─── Authenticator setup (only initialize once) ────────────────────────
+# ─── Authenticator setup ───────────────────────────────────────────────
+# Only run once per session (avoids recreating on every rerun)
 if 'authenticator' not in st.session_state:
     credentials = {
         'usernames': {
@@ -57,6 +58,7 @@ if 'authenticator' not in st.session_state:
         }
     }
 
+    # CRITICAL: All arguments after credentials MUST be keywords (not positional!)
     st.session_state.authenticator = stauth.Authenticate(
         credentials,
         cookie_name='costa_school_cookie',
@@ -64,7 +66,7 @@ if 'authenticator' not in st.session_state:
         cookie_expiry_days=30
     )
 
-    # Store credentials in session for later updates (forgot/reset)
+    # Keep credentials reference for updates during forgot/reset
     st.session_state.credentials = credentials
 
 authenticator = st.session_state.authenticator
@@ -76,17 +78,17 @@ if authentication_status:
     st.session_state.logged_in = True
     st.session_state.username = username
 
-    # Sidebar – welcome + logout + change password
+    # Sidebar content
     with st.sidebar:
         st.write(f"**Welcome, {name}**")
-        authenticator.logout('Logout', 'sidebar', key='logout_key')
+        authenticator.logout('Logout', 'sidebar', key='unique_logout_key')
 
-        # Change own password
+        # Change password (for logged-in user)
         with st.expander("Change my password"):
             try:
                 if authenticator.reset_password(username, location='main'):
-                    st.success('Password changed successfully')
-                    # Update in-memory credentials
+                    st.success('Password changed successfully!')
+                    # Sync in-memory credentials
                     st.session_state.credentials['usernames'][username]['password'] = \
                         authenticator.credentials['usernames'][username]['password']
             except Exception as e:
@@ -95,29 +97,27 @@ if authentication_status:
 elif authentication_status is False:
     st.error('Username or password is incorrect')
 elif authentication_status is None:
-    st.warning('Please enter username and password')
+    st.warning('Please enter your username and password')
 
-# Forgot password – shows new random password on screen
+# Forgot password – displays new random password on screen
 try:
-    username_forgot_pw, email_forgot_pw, random_password = authenticator.forgot_password('main')
-    if username_forgot_pw:
-        st.success(f"**New temporary password for {username_forgot_pw}:**   {random_password}")
-        st.info("Copy this password now (it disappears after refresh or page change)")
-        st.warning("Log in immediately, then use sidebar → Change my password to set a new one")
-        # Update credentials in session state
-        st.session_state.credentials['usernames'][username_forgot_pw]['password'] = \
-            Hasher([random_password]).generate()[0]
+    username_forgot, email_forgot, random_pw = authenticator.forgot_password('main')
+    if username_forgot:
+        st.success(f"**New temporary password for {username_forgot}:**  {random_pw}")
+        st.info("Copy this immediately — it disappears after refresh.")
+        st.warning("Log in now, then change it via sidebar → Change my password")
+        # Update in-memory hash
+        st.session_state.credentials['usernames'][username_forgot]['password'] = \
+            Hasher([random_pw]).generate()[0]
 except Exception as e:
     if "No username provided" not in str(e):
-        st.error(f"Forgot password failed: {str(e)}")
+        st.error(f"Forgot password error: {str(e)}")
 
+# Stop execution if not authenticated
 if not authentication_status:
     st.stop()
 
-# ────────────────────────────────────────────────────────────────────────
-# Navigation
-# ────────────────────────────────────────────────────────────────────────
-
+# ─── Main navigation ───────────────────────────────────────────────────
 page = st.sidebar.radio("Menu", [
     "Dashboard",
     "Students",
@@ -138,164 +138,151 @@ if page == "Dashboard":
     exp_sum = conn.execute("SELECT SUM(amount) FROM expenses").fetchone()[0] or 0
     col3.metric("Net Balance (All Time)", f"USh {inc_sum - exp_sum:,.0f}")
 
-# ─── Students ──────────────────────────────────────────────────────────
+# ─── Students page ─────────────────────────────────────────────────────
 elif page == "Students":
     st.header("Students")
 
-    tab_view, tab_add = st.tabs(["View / Export", "Add Student"])
+    tab1, tab2 = st.tabs(["View & Export", "Add Student"])
 
-    with tab_view:
+    with tab1:
         df = pd.read_sql_query("""
             SELECT s.id, s.name, s.age, s.enrollment_date, c.name AS class_name
-            FROM students s
-            LEFT JOIN classes c ON s.class_id = c.id
+            FROM students s LEFT JOIN classes c ON s.class_id = c.id
         """, conn)
         st.dataframe(df, use_container_width=True)
 
-        buf = BytesIO()
-        with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df.to_excel(writer, sheet_name='Students', index=False)
-        buf.seek(0)
+        output.seek(0)
         st.download_button(
-            label="Download Students Excel",
-            data=buf,
+            "Download Students Excel",
+            output,
             file_name="costa_students.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-    with tab_add:
-        with st.form("add_student_form"):
-            name = st.text_input("Full name")
-            age = st.number_input("Age", 5, 30, 10)
-            enroll_date = st.date_input("Enrollment date", datetime.today())
-            cls_df = pd.read_sql("SELECT id, name FROM classes", conn)
-            cls_name = st.selectbox("Class", cls_df["name"] if not cls_df.empty else ["No classes yet"])
-            cls_id = cls_df[cls_df["name"] == cls_name]["id"].iloc[0] if not cls_df.empty and cls_name != "No classes yet" else None
+    with tab2:
+        with st.form("add_student"):
+            name = st.text_input("Name")
+            age = st.number_input("Age", min_value=5, max_value=30)
+            enroll_date = st.date_input("Enrollment Date")
+            classes = pd.read_sql("SELECT id, name FROM classes", conn)
+            class_name = st.selectbox("Class", classes['name'] if not classes.empty else ["No classes"])
+            class_id = classes[classes['name'] == class_name]['id'].iloc[0] if not classes.empty and class_name != "No classes" else None
 
-            if st.form_submit_button("Add Student") and name and cls_id is not None:
+            submitted = st.form_submit_button("Add")
+            if submitted and name and class_id is not None:
                 cursor.execute(
                     "INSERT INTO students (name, age, enrollment_date, class_id) VALUES (?, ?, ?, ?)",
-                    (name, age, enroll_date, int(cls_id))
+                    (name, age, enroll_date, int(class_id))
                 )
                 conn.commit()
-                st.success("Student added")
+                st.success("Student added!")
                 st.rerun()
 
-    with st.expander("Add new class"):
-        new_cls = st.text_input("Class name (e.g. P.1, S.2)")
-        if st.button("Create class") and new_cls:
+    with st.expander("Add Class"):
+        new_class = st.text_input("Class name")
+        if st.button("Add") and new_class:
             try:
-                cursor.execute("INSERT INTO classes (name) VALUES (?)", (new_cls,))
+                cursor.execute("INSERT INTO classes (name) VALUES (?)", (new_class,))
                 conn.commit()
-                st.success(f"Class {new_cls} created")
-            except sqlite3.IntegrityError:
-                st.error("Class name already exists")
+                st.success("Class added")
+            except:
+                st.error("Class already exists")
 
-# ─── Uniforms ──────────────────────────────────────────────────────────
+# ─── Uniforms page ─────────────────────────────────────────────────────
 elif page == "Uniforms":
     st.header("Uniforms")
 
     df = pd.read_sql("SELECT * FROM uniforms", conn)
-    st.dataframe(df, use_container_width=True)
+    st.dataframe(df)
 
-    buf = BytesIO()
-    with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.to_excel(writer, sheet_name='Uniforms', index=False)
-    buf.seek(0)
-    st.download_button("Download Uniforms Excel", buf, "uniforms.xlsx",
-                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    output.seek(0)
+    st.download_button("Download Excel", output, "uniforms.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-    with st.form("add_uniform"):
-        utype = st.text_input("Type")
-        size  = st.text_input("Size")
-        stock = st.number_input("Stock", 0, step=1)
-        cost  = st.number_input("Unit cost (UGX)", 0.0, step=500.0)
-
-        if st.form_submit_button("Add item"):
-            cursor.execute(
-                "INSERT INTO uniforms (type, size, stock, unit_cost) VALUES (?,?,?,?)",
-                (utype, size, stock, cost)
-            )
+    with st.form("uniform"):
+        typ = st.text_input("Type")
+        sz = st.text_input("Size")
+        stk = st.number_input("Stock", 0)
+        cst = st.number_input("Cost", 0.0)
+        if st.form_submit_button("Add"):
+            cursor.execute("INSERT INTO uniforms (type, size, stock, unit_cost) VALUES (?,?,?,?)", (typ, sz, stk, cst))
             conn.commit()
-            st.success("Item added")
-            st.rerun()
+            st.success("Added")
 
-# ─── Finances ──────────────────────────────────────────────────────────
+# ─── Finances page ─────────────────────────────────────────────────────
 elif page == "Finances":
-    st.header("Income & Expenses")
+    st.header("Finances")
 
     c1, c2 = st.columns(2)
-
     with c1:
-        st.subheader("Expense")
-        with st.form("exp"):
-            d = st.date_input("Date")
-            a = st.number_input("Amount", 0.0, step=1000.0)
+        with st.form("expense"):
+            dt = st.date_input("Date")
+            amt = st.number_input("Amount")
             cat = st.text_input("Category")
-            if st.form_submit_button("Save"):
-                cursor.execute("INSERT INTO expenses (date, amount, category) VALUES (?,?,?)", (d, a, cat))
+            if st.form_submit_button("Save Expense"):
+                cursor.execute("INSERT INTO expenses VALUES (NULL,?,?,?)", (dt, amt, cat))
                 conn.commit()
                 st.success("Saved")
 
     with c2:
-        st.subheader("Income")
-        with st.form("inc"):
-            d = st.date_input("Date")
-            a = st.number_input("Amount", 0.0, step=1000.0)
+        with st.form("income"):
+            dt = st.date_input("Date")
+            amt = st.number_input("Amount")
             src = st.text_input("Source")
-            if st.form_submit_button("Save"):
-                cursor.execute("INSERT INTO incomes (date, amount, source) VALUES (?,?,?)", (d, a, src))
+            if st.form_submit_button("Save Income"):
+                cursor.execute("INSERT INTO incomes VALUES (NULL,?,?,?)", (dt, amt, src))
                 conn.commit()
                 st.success("Saved")
 
-# ─── Financial Report ──────────────────────────────────────────────────
+# ─── Report page ───────────────────────────────────────────────────────
 elif page == "Financial Report":
     st.header("Financial Report")
 
     c1, c2 = st.columns(2)
-    start = c1.date_input("From", datetime(datetime.today().year, 1, 1))
-    end   = c2.date_input("To", datetime.today())
+    sdate = c1.date_input("Start")
+    edate = c2.date_input("End")
 
     if st.button("Generate"):
-        ex = pd.read_sql_query("SELECT * FROM expenses WHERE date BETWEEN ? AND ?", conn, params=(start, end))
-        inc = pd.read_sql_query("SELECT * FROM incomes WHERE date BETWEEN ? AND ?", conn, params=(start, end))
+        exp = pd.read_sql_query("SELECT * FROM expenses WHERE date BETWEEN ? AND ?", conn, params=(sdate, edate))
+        inc = pd.read_sql_query("SELECT * FROM incomes WHERE date BETWEEN ? AND ?", conn, params=(sdate, edate))
 
-        tot_ex = ex["amount"].sum()
-        tot_inc = inc["amount"].sum()
-        bal = tot_inc - tot_ex
+        texp = exp.amount.sum()
+        tinc = inc.amount.sum()
+        bal = tinc - texp
 
-        st.metric("Income", f"USh {tot_inc:,.0f}")
-        st.metric("Expenses", f"USh {tot_ex:,.0f}")
+        st.metric("Income", f"USh {tinc:,.0f}")
+        st.metric("Expenses", f"USh {texp:,.0f}")
         st.metric("Balance", f"USh {bal:,.0f}")
 
         t1, t2 = st.tabs(["Incomes", "Expenses"])
-        with t1: st.dataframe(inc)
-        with t2: st.dataframe(ex)
+        t1.dataframe(inc)
+        t2.dataframe(exp)
 
         # PDF
-        pdf_buf = BytesIO()
-        pdf = canvas.Canvas(pdf_buf, pagesize=letter)
-        pdf.drawString(100, 750, "Costa School - Financial Report")
-        pdf.drawString(100, 730, f"{start}  –  {end}")
+        buf = BytesIO()
+        p = canvas.Canvas(buf, pagesize=letter)
+        p.drawString(100, 750, "Costa School Report")
+        p.drawString(100, 730, f"{sdate} to {edate}")
         y = 680
-        pdf.drawString(100, y, f"Income:   {tot_inc:,.0f}"); y -= 40
-        pdf.drawString(100, y, f"Expenses: {tot_ex:,.0f}"); y -= 40
-        pdf.drawString(100, y, f"Balance:  {bal:,.0f}")
-        pdf.save()
-        pdf_buf.seek(0)
-        st.download_button("PDF", pdf_buf, f"report_{start}_{end}.pdf", "application/pdf")
+        p.drawString(100, y, f"Income: {tinc:,.0f}"); y -= 30
+        p.drawString(100, y, f"Expenses: {texp:,.0f}"); y -= 30
+        p.drawString(100, y, f"Balance: {bal:,.0f}")
+        p.save()
+        buf.seek(0)
+        st.download_button("PDF", buf, "report.pdf", "application/pdf")
 
         # Excel
-        ex_buf = BytesIO()
-        with pd.ExcelWriter(ex_buf, engine='xlsxwriter') as w:
-            inc.to_excel(w, sheet_name="Incomes", index=False)
-            ex.to_excel(w, sheet_name="Expenses", index=False)
-            pd.DataFrame({
-                "Metric": ["Total Income", "Total Expenses", "Balance"],
-                "Value": [tot_inc, tot_ex, bal]
-            }).to_excel(w, sheet_name="Summary", index=False)
-        ex_buf.seek(0)
-        st.download_button("Excel", ex_buf, f"financial_{start}_{end}.xlsx",
-                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        ebuf = BytesIO()
+        with pd.ExcelWriter(ebuf, engine='xlsxwriter') as w:
+            inc.to_excel(w, "Incomes")
+            exp.to_excel(w, "Expenses")
+            pd.DataFrame({"Metric": ["Income","Expenses","Balance"], "Value":[tinc,texp,bal]}).to_excel(w, "Summary")
+        ebuf.seek(0)
+        st.download_button("Excel", ebuf, "report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-st.sidebar.info("Data stored in SQLite – persistent on Streamlit Cloud")
+st.sidebar.info("Powered by SQLite on Streamlit Cloud")
