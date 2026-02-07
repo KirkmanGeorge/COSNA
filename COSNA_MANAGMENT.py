@@ -5,6 +5,7 @@ from datetime import datetime
 from io import BytesIO
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
+import time
 
 # ─── Page config ───────────────────────────────────────────────────────
 st.set_page_config(page_title="COSNA School Management", layout="wide", initial_sidebar_state="expanded")
@@ -64,7 +65,6 @@ def initialize_database():
                        date DATE, amount REAL, source TEXT)''')
     conn.commit()
 
-    # Seed uniform categories (only if not exist)
     uniform_seeds = [
         ('Boys Main Shorts', 'boys', 0),
         ('Button Shirts Main', 'shared', 1),
@@ -88,7 +88,6 @@ def initialize_database():
             )
             conn.commit()
 
-    # Seed expense categories
     expense_seeds = ['Medical', 'Salaries', 'Utilities', 'Maintenance', 'Supplies', 'Transport', 'Events']
     for cat in expense_seeds:
         cursor.execute("SELECT id FROM expense_categories WHERE name = ?", (cat,))
@@ -160,12 +159,16 @@ elif page == "Uniforms":
     tab_view, tab_update, tab_sale = st.tabs(["View Inventory", "Update Stock/Price", "Record Sale"])
 
     with tab_view:
+        st.subheader("Current Inventory")
         df = pd.read_sql_query("""
             SELECT uc.category, uc.gender, uc.is_shared, u.stock, u.unit_price
             FROM uniforms u JOIN uniform_categories uc ON u.category_id = uc.id
             ORDER BY uc.gender, uc.category
         """, conn)
         st.dataframe(df, use_container_width=True)
+
+        if st.button("Refresh Inventory"):
+            st.rerun()
 
         buf = BytesIO()
         with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
@@ -183,17 +186,19 @@ elif page == "Uniforms":
             current = conn.execute("SELECT stock, unit_price FROM uniforms WHERE category_id = ?", (cat_id,)).fetchone()
             curr_stock, curr_price = current if current else (0, 0.0)
 
-            st.write(f"Current stock: {curr_stock}")
-            st.write(f"Current unit price: USh {curr_price:,.0f}")
+            st.write(f"**Current stock:** {curr_stock}")
+            st.write(f"**Current unit price:** USh {curr_price:,.0f}")
 
             with st.form("update_uniform", clear_on_submit=True):
                 new_stock = st.number_input("New Stock Level", min_value=0, value=curr_stock)
                 new_price = st.number_input("New Unit Price (USh)", min_value=0.0, value=curr_price, step=500.0)
 
-                if st.form_submit_button("Update"):
-                    cursor.execute("UPDATE uniforms SET stock = ?, unit_price = ? WHERE category_id = ?", (new_stock, new_price, cat_id))
+                if st.form_submit_button("Update Stock & Price"):
+                    cursor.execute("UPDATE uniforms SET stock = ?, unit_price = ? WHERE category_id = ?",
+                                   (new_stock, new_price, cat_id))
                     conn.commit()
-                    st.success("Inventory updated")
+                    time.sleep(0.8)  # Give DB time to settle on cloud
+                    st.success(f"Updated to **{new_stock}** items at USh **{new_price:,.0f}**")
                     st.rerun()
 
     with tab_sale:
@@ -205,8 +210,8 @@ elif page == "Uniforms":
             current = conn.execute("SELECT stock, unit_price FROM uniforms WHERE category_id = ?", (cat_id,)).fetchone()
             curr_stock, unit_price = current if current else (0, 0.0)
 
-            st.write(f"Available stock: {curr_stock}")
-            st.write(f"Unit price: USh {unit_price:,.0f}")
+            st.write(f"**Available stock:** {curr_stock}")
+            st.write(f"**Unit price:** USh {unit_price:,.0f}")
 
             with st.form("sell_uniform", clear_on_submit=True):
                 quantity = st.number_input("Quantity to Sell", min_value=1, max_value=curr_stock or 1, value=1)
@@ -214,14 +219,15 @@ elif page == "Uniforms":
 
                 if st.form_submit_button("Record Sale"):
                     if quantity > curr_stock:
-                        st.error("Not enough stock")
+                        st.error(f"Not enough stock (only {curr_stock} available)")
                     else:
                         total_amount = quantity * unit_price
                         cursor.execute("UPDATE uniforms SET stock = stock - ? WHERE category_id = ?", (quantity, cat_id))
                         cursor.execute("INSERT INTO incomes (date, amount, source) VALUES (?, ?, ?)",
                                        (sale_date, total_amount, f"Uniform Sale - {selected_cat}"))
                         conn.commit()
-                        st.success(f"Sold {quantity} items for USh {total_amount:,.0f}. Income recorded.")
+                        time.sleep(0.8)  # Ensure change is visible
+                        st.success(f"Sold {quantity} × {selected_cat} for USh {total_amount:,.0f}")
                         st.rerun()
 
 # ─── Finances ──────────────────────────────────────────────────────────
@@ -268,13 +274,6 @@ elif page == "Finances":
         df_inc = pd.read_sql("SELECT date, amount, source FROM incomes ORDER BY date DESC LIMIT 10", conn)
         st.dataframe(df_inc, use_container_width=True)
 
-        buf = BytesIO()
-        with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-            df_inc.to_excel(writer, sheet_name='Incomes', index=False)
-        buf.seek(0)
-        st.download_button("Download Recent Incomes Excel", buf, "cosna_incomes.xlsx",
-                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
     with tab_cat:
         st.subheader("Expense Categories")
         df_cats = pd.read_sql("SELECT name FROM expense_categories ORDER BY name", conn)
@@ -315,7 +314,6 @@ elif page == "Financial Report":
         tab1.dataframe(inc)
         tab2.dataframe(exp)
 
-        # PDF Export
         pdf_buf = BytesIO()
         pdf = canvas.Canvas(pdf_buf, pagesize=letter)
         pdf.drawString(100, 750, "COSNA School Financial Report")
@@ -327,18 +325,5 @@ elif page == "Financial Report":
         pdf.save()
         pdf_buf.seek(0)
         st.download_button("Download PDF", pdf_buf, f"report_{start}_to_{end}.pdf", "application/pdf")
-
-        # Excel Export
-        excel_buf = BytesIO()
-        with pd.ExcelWriter(excel_buf, engine='xlsxwriter') as writer:
-            inc.to_excel(writer, sheet_name="Incomes", index=False)
-            exp.to_excel(writer, sheet_name="Expenses", index=False)
-            pd.DataFrame({
-                "Metric": ["Total Income", "Total Expenses", "Balance"],
-                "Value (USh)": [total_inc, total_exp, balance]
-            }).to_excel(writer, sheet_name="Summary", index=False)
-        excel_buf.seek(0)
-        st.download_button("Download Excel Report", excel_buf, f"financial_{start}_to_{end}.xlsx",
-                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 st.sidebar.info("Logged in as admin – data saved in SQLite (persistent on Streamlit Cloud)")
