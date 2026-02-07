@@ -35,7 +35,7 @@ if 'authenticator' not in st.session_state:
         'usernames': {
             'admin': {
                 'name': 'Administrator',
-                'password': 'costa2026',  # plain text – auto-hash enabled
+                'password': 'costa2026',  # plain text – library auto-hashes
                 'email': 'admin@costa.school'
             }
         }
@@ -52,9 +52,10 @@ if 'authenticator' not in st.session_state:
 
 authenticator = st.session_state.authenticator
 
-# ─── Login – NO location parameter (default to main) ───────────────────
+# ─── Login – with required location keyword ────────────────────────────
 name, authentication_status, username = authenticator.login(
-    form_name='Login'  # only form_name – no location keyword
+    form_name='Login',
+    location='main'  # ← this is required in your installed version
 )
 
 if authentication_status:
@@ -104,10 +105,10 @@ if page == "Dashboard":
     exp = conn.execute("SELECT SUM(amount) FROM expenses").fetchone()[0] or 0
     col3.metric("Net Balance", f"USh {inc - exp:,.0f}")
 
-# ─── Students ──────────────────────────────────────────────────────────
+# ─── Students (expand as needed) ───────────────────────────────────────
 elif page == "Students":
     st.header("Students")
-    # Add your full students view/add/export code here from previous versions
+    # Add your view/add/export code here
 
 # ─── Uniforms ──────────────────────────────────────────────────────────
 elif page == "Uniforms":
