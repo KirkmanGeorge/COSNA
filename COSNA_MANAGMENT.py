@@ -45,25 +45,29 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS incomes
 
 conn.commit()
 
-# ─── Authenticator setup (compatible with 0.3.3) ───────────────────────
-if 'credentials' not in st.session_state:
-    st.session_state.credentials = {
+# ─── Authenticator setup (only initialize once) ────────────────────────
+if 'authenticator' not in st.session_state:
+    credentials = {
         'usernames': {
             'admin': {
                 'name': 'Administrator',
                 'password': Hasher(['costa2026']).generate()[0],
                 'email': 'admin@costa.school'
             }
-            # You can add more users manually here later
         }
     }
 
-authenticator = stauth.Authenticate(
-    st.session_state.credentials,
-    cookie_name='costa_school_cookie',
-    key='costa_school_secret_key_2026_change_me_please',
-    cookie_expiry_days=30
-)
+    st.session_state.authenticator = stauth.Authenticate(
+        credentials,
+        cookie_name='costa_school_cookie',
+        key='costa_school_secret_key_2026_change_me_please',
+        cookie_expiry_days=30
+    )
+
+    # Store credentials in session for later updates (forgot/reset)
+    st.session_state.credentials = credentials
+
+authenticator = st.session_state.authenticator
 
 # ─── Login screen ──────────────────────────────────────────────────────
 name, authentication_status, username = authenticator.login('Login', 'main')
@@ -98,8 +102,8 @@ try:
     username_forgot_pw, email_forgot_pw, random_password = authenticator.forgot_password('main')
     if username_forgot_pw:
         st.success(f"**New temporary password for {username_forgot_pw}:**   {random_password}")
-        st.info("→ Copy this password now (it will disappear after refresh)")
-        st.warning("After you log in, immediately go to sidebar → Change my password")
+        st.info("Copy this password now (it disappears after refresh or page change)")
+        st.warning("Log in immediately, then use sidebar → Change my password to set a new one")
         # Update credentials in session state
         st.session_state.credentials['usernames'][username_forgot_pw]['password'] = \
             Hasher([random_password]).generate()[0]
