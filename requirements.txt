@@ -1,6 +1,6 @@
-streamlit-authenticator==0.3.3
-pyyaml
-xlsxwriter   # if not already there
+streamlit
 pandas
 reportlab
-streamlit
+xlsxwriter
+streamlit-authenticator==0.3.3
+pyyaml
