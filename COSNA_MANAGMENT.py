@@ -35,11 +35,11 @@ with st.sidebar:
         st.session_state.logged_in = False
         st.rerun()
 
-# ─── Database connection ───────────────────────────────────────────────
+# ─── Database ──────────────────────────────────────────────────────────
 conn = sqlite3.connect('cosna_school.db', check_same_thread=False)
 cursor = conn.cursor()
 
-# ─── Initialize database (tables + seed data) ──────────────────────────
+# ─── Initialize database ───────────────────────────────────────────────
 def initialize_database():
     cursor.execute('''CREATE TABLE IF NOT EXISTS classes (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS students (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, age INTEGER, enrollment_date DATE, class_id INTEGER, FOREIGN KEY(class_id) REFERENCES classes(id))''')
@@ -261,6 +261,7 @@ elif page == "Finances":
             if st.form_submit_button("Save Expense") and cat_id:
                 cursor.execute("INSERT INTO expenses (date, amount, category_id) VALUES (?, ?, ?)", (date, amount, int(cat_id)))
                 conn.commit()
+                time.sleep(1.2)
                 st.success("Expense recorded")
                 st.rerun()
 
@@ -281,12 +282,20 @@ elif page == "Finances":
             if st.form_submit_button("Save Income") and source:
                 cursor.execute("INSERT INTO incomes (date, amount, source) VALUES (?, ?, ?)", (date, amount, source))
                 conn.commit()
+                time.sleep(1.2)
                 st.success("Income recorded")
                 st.rerun()
 
         st.subheader("Recent Incomes")
         df_inc = pd.read_sql("SELECT date, amount, source FROM incomes ORDER BY date DESC LIMIT 10", conn)
         st.dataframe(df_inc, width='stretch')
+
+        buf = BytesIO()
+        with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+            df_inc.to_excel(writer, sheet_name='Incomes', index=False)
+        buf.seek(0)
+        st.download_button("Download Recent Incomes Excel", buf, "cosna_incomes.xlsx",
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     with tab_cat:
         st.subheader("Expense Categories")
@@ -299,6 +308,7 @@ elif page == "Finances":
                 try:
                     cursor.execute("INSERT INTO expense_categories (name) VALUES (?)", (new_cat,))
                     conn.commit()
+                    time.sleep(1.2)
                     st.success(f"Category '{new_cat}' added")
                     st.rerun()
                 except sqlite3.IntegrityError:
@@ -328,6 +338,7 @@ elif page == "Financial Report":
         tab1.dataframe(inc, width='stretch')
         tab2.dataframe(exp, width='stretch')
 
+        # PDF Export
         pdf_buf = BytesIO()
         pdf = canvas.Canvas(pdf_buf, pagesize=letter)
         pdf.drawString(100, 750, "COSNA School Financial Report")
@@ -339,5 +350,18 @@ elif page == "Financial Report":
         pdf.save()
         pdf_buf.seek(0)
         st.download_button("Download PDF", pdf_buf, f"report_{start}_to_{end}.pdf", "application/pdf")
+
+        # Excel Export
+        excel_buf = BytesIO()
+        with pd.ExcelWriter(excel_buf, engine='xlsxwriter') as writer:
+            inc.to_excel(writer, sheet_name="Incomes", index=False)
+            exp.to_excel(writer, sheet_name="Expenses", index=False)
+            pd.DataFrame({
+                "Metric": ["Total Income", "Total Expenses", "Balance"],
+                "Value (USh)": [total_inc, total_exp, balance]
+            }).to_excel(writer, sheet_name="Summary", index=False)
+        excel_buf.seek(0)
+        st.download_button("Download Excel Report", excel_buf, f"financial_{start}_to_{end}.xlsx",
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 st.sidebar.info("Logged in as admin – data saved in SQLite (persistent on Streamlit Cloud)")
