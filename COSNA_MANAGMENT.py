@@ -97,7 +97,7 @@ if page == "Dashboard":
 
     st.subheader("Recent Incomes (last 5)")
     df_inc = pd.read_sql("SELECT date, amount, source FROM incomes ORDER BY date DESC LIMIT 5", conn)
-    st.dataframe(df_inc, use_container_width=True)
+    st.dataframe(df_inc, width='stretch')
     conn.close()
 
 # ─── Students ──────────────────────────────────────────────────────────
@@ -117,7 +117,7 @@ elif page == "Students":
             query += " WHERE c.name = ?"
             params = (selected_class,)
         df = pd.read_sql_query(query, conn, params=params)
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df, width='stretch')
 
         if not df.empty:
             buf = BytesIO()
@@ -167,22 +167,30 @@ elif page == "Students":
 elif page == "Uniforms":
     st.header("Uniforms – Inventory & Sales")
     
+    # Add a refresh counter to session state
+    if 'uniform_refresh_counter' not in st.session_state:
+        st.session_state.uniform_refresh_counter = 0
+    
     tab_view, tab_update, tab_sale = st.tabs(["View Inventory", "Update Stock/Price", "Record Sale"])
 
     with tab_view:
         st.subheader("Current Inventory")
-        # Always fetch fresh data
+        # Always fetch fresh data - use the refresh counter to prevent caching
         conn = get_db_connection()
         df = pd.read_sql_query("""
             SELECT uc.category, uc.gender, uc.is_shared, u.stock, u.unit_price
             FROM uniforms u JOIN uniform_categories uc ON u.category_id = uc.id
             ORDER BY uc.gender, uc.category
         """, conn)
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df, width='stretch')
         conn.close()
 
+        # Display refresh counter (for debugging)
+        st.caption(f"Last updated: {st.session_state.uniform_refresh_counter}")
+        
         # Refresh button
-        if st.button("Refresh Inventory"):
+        if st.button("🔄 Refresh Inventory", type="primary"):
+            st.session_state.uniform_refresh_counter += 1
             st.rerun()
 
         buf = BytesIO()
@@ -209,16 +217,21 @@ elif page == "Uniforms":
                 new_stock = st.number_input("New Stock Level", min_value=0, value=curr_stock)
                 new_price = st.number_input("New Unit Price (USh)", min_value=0.0, value=curr_price, step=500.0)
 
-                if st.form_submit_button("Update Stock & Price"):
+                update_clicked = st.form_submit_button("💾 Update Stock & Price", type="primary")
+                
+                if update_clicked:
                     cursor = conn.cursor()
                     cursor.execute("UPDATE uniforms SET stock = ?, unit_price = ? WHERE category_id = ?",
                                    (new_stock, new_price, cat_id))
                     conn.commit()
-                    conn.close()  # Close connection immediately
+                    conn.close()
                     
-                    st.success(f"**Updated!** Now {new_stock} items at USh {new_price:,.0f}")
-                    # Force immediate refresh
-                    time.sleep(0.3)
+                    # Force refresh by updating the counter
+                    st.session_state.uniform_refresh_counter += 1
+                    
+                    st.success(f"✅ **Updated!** Now {new_stock} items at USh {new_price:,.0f}")
+                    # Add a small delay and auto-refresh
+                    time.sleep(0.5)
                     st.rerun()
                 else:
                     conn.close()
@@ -243,9 +256,11 @@ elif page == "Uniforms":
                 quantity = st.number_input("Quantity to Sell", min_value=1, max_value=curr_stock or 1, value=1)
                 sale_date = st.date_input("Sale Date", datetime.today())
 
-                if st.form_submit_button("Record Sale"):
+                sale_clicked = st.form_submit_button("💰 Record Sale", type="primary")
+                
+                if sale_clicked:
                     if quantity > curr_stock:
-                        st.error(f"Not enough stock (only {curr_stock} available)")
+                        st.error(f"❌ Not enough stock (only {curr_stock} available)")
                         conn.close()
                     else:
                         total_amount = quantity * unit_price
@@ -254,11 +269,14 @@ elif page == "Uniforms":
                         cursor.execute("INSERT INTO incomes (date, amount, source) VALUES (?, ?, ?)",
                                        (sale_date, total_amount, f"Uniform Sale - {selected_cat}"))
                         conn.commit()
-                        conn.close()  # Close connection immediately
+                        conn.close()
                         
-                        st.success(f"Sold {quantity} items for USh {total_amount:,.0f}. Income recorded.")
-                        # Force immediate refresh
-                        time.sleep(0.3)
+                        # Force refresh by updating the counter
+                        st.session_state.uniform_refresh_counter += 1
+                        
+                        st.success(f"✅ Sold {quantity} items for USh {total_amount:,.0f}. Income recorded.")
+                        # Add a small delay and auto-refresh
+                        time.sleep(0.5)
                         st.rerun()
                 else:
                     conn.close()
@@ -294,7 +312,7 @@ elif page == "Finances":
             FROM expenses e LEFT JOIN expense_categories ec ON e.category_id = ec.id
             ORDER BY e.date DESC LIMIT 10
         """, conn)
-        st.dataframe(df_exp, use_container_width=True)
+        st.dataframe(df_exp, width='stretch')
         conn.close()
 
     with tab_inc:
@@ -314,14 +332,14 @@ elif page == "Finances":
 
         st.subheader("Recent Incomes")
         df_inc = pd.read_sql("SELECT date, amount, source FROM incomes ORDER BY date DESC LIMIT 10", conn)
-        st.dataframe(df_inc, use_container_width=True)
+        st.dataframe(df_inc, width='stretch')
         conn.close()
 
     with tab_cat:
         conn = get_db_connection()
         st.subheader("Expense Categories")
         df_cats = pd.read_sql("SELECT name FROM expense_categories ORDER BY name", conn)
-        st.dataframe(df_cats, use_container_width=True)
+        st.dataframe(df_cats, width='stretch')
 
         with st.form("add_category"):
             new_cat = st.text_input("New Category Name")
@@ -359,8 +377,8 @@ elif page == "Financial Report":
         st.metric("Balance", f"USh {balance:,.0f}")
 
         tab1, tab2 = st.tabs(["Incomes", "Expenses"])
-        tab1.dataframe(inc)
-        tab2.dataframe(exp)
+        tab1.dataframe(inc, width='stretch')
+        tab2.dataframe(exp, width='stretch')
 
         pdf_buf = BytesIO()
         pdf = canvas.Canvas(pdf_buf, pagesize=letter)
