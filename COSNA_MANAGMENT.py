@@ -7,9 +7,6 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 import streamlit_authenticator as stauth
 from streamlit_authenticator.utilities.hasher import Hasher
-import yaml
-from yaml.loader import SafeLoader
-import secrets
 
 # ─── Page config ───────────────────────────────────────────────────────
 st.set_page_config(page_title="Costa School Management", layout="wide")
@@ -25,7 +22,7 @@ def get_db_connection():
 conn = get_db_connection()
 cursor = conn.cursor()
 
-# Create tables
+# Create tables if they don't exist
 cursor.execute('''CREATE TABLE IF NOT EXISTS classes
                   (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
 
@@ -48,75 +45,82 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS incomes
 
 conn.commit()
 
-# ─── streamlit-authenticator setup ─────────────────────────────────────
-# Initial credentials (hashed passwords)
+# ─── Authenticator setup (compatible with 0.3.3) ───────────────────────
 if 'credentials' not in st.session_state:
-    credentials = {
+    st.session_state.credentials = {
         'usernames': {
             'admin': {
                 'name': 'Administrator',
-                'password': Hasher(['costa2026']).generate()[0],  # hashed version of "costa2026"
+                'password': Hasher(['costa2026']).generate()[0],
                 'email': 'admin@costa.school'
             }
-            # You can add more users here later
+            # You can add more users manually here later
         }
     }
-    st.session_state.credentials = credentials
 
 authenticator = stauth.Authenticate(
     st.session_state.credentials,
     cookie_name='costa_school_cookie',
-    key='costa_school_secret_key_2026_change_this',  # change this to a strong random string
+    key='costa_school_secret_key_2026_change_me_please',
     cookie_expiry_days=30
 )
 
-# ─── Login UI ──────────────────────────────────────────────────────────
+# ─── Login screen ──────────────────────────────────────────────────────
 name, authentication_status, username = authenticator.login('Login', 'main')
 
 if authentication_status:
     st.session_state.logged_in = True
     st.session_state.username = username
 
-    # Logout & password change in sidebar
+    # Sidebar – welcome + logout + change password
     with st.sidebar:
-        st.write(f"Welcome, **{name}**")
-        authenticator.logout('Logout', 'sidebar', key='unique_key_logout')
+        st.write(f"**Welcome, {name}**")
+        authenticator.logout('Logout', 'sidebar', key='logout_key')
 
-        # Allow user to change their own password
+        # Change own password
         with st.expander("Change my password"):
             try:
-                if authenticator.reset_password(username, location='sidebar'):
-                    st.success('Password updated successfully')
-                    # Update the in-memory credentials (important!)
+                if authenticator.reset_password(username, location='main'):
+                    st.success('Password changed successfully')
+                    # Update in-memory credentials
                     st.session_state.credentials['usernames'][username]['password'] = \
                         authenticator.credentials['usernames'][username]['password']
             except Exception as e:
-                st.error(e)
+                st.error(str(e))
 
 elif authentication_status is False:
-    st.error('Username / password is incorrect')
+    st.error('Username or password is incorrect')
 elif authentication_status is None:
-    st.warning('Please enter your username and password')
+    st.warning('Please enter username and password')
 
-# Forgot Password (shows new random password on screen)
+# Forgot password – shows new random password on screen
 try:
-    username_of_forgot_pw, email_of_forgot_pw, random_password = authenticator.forgot_password('main')
-    if username_of_forgot_pw:
-        st.success(f"**New temporary password for {username_of_forgot_pw}:**  {random_password}")
-        st.info("Copy this password now — it will NOT be shown again.")
-        st.warning("After login, go to sidebar → Change my password to set a new one.")
+    username_forgot_pw, email_forgot_pw, random_password = authenticator.forgot_password('main')
+    if username_forgot_pw:
+        st.success(f"**New temporary password for {username_forgot_pw}:**   {random_password}")
+        st.info("→ Copy this password now (it will disappear after refresh)")
+        st.warning("After you log in, immediately go to sidebar → Change my password")
         # Update credentials in session state
-        st.session_state.credentials['usernames'][username_of_forgot_pw]['password'] = \
+        st.session_state.credentials['usernames'][username_forgot_pw]['password'] = \
             Hasher([random_password]).generate()[0]
 except Exception as e:
     if "No username provided" not in str(e):
-        st.error(f"Forgot password error: {e}")
+        st.error(f"Forgot password failed: {str(e)}")
 
 if not authentication_status:
     st.stop()
 
-# ─── Main navigation ───────────────────────────────────────────────────
-page = st.sidebar.radio("Go to", ["Dashboard", "Students", "Uniforms", "Finances", "Financial Report"])
+# ────────────────────────────────────────────────────────────────────────
+# Navigation
+# ────────────────────────────────────────────────────────────────────────
+
+page = st.sidebar.radio("Menu", [
+    "Dashboard",
+    "Students",
+    "Uniforms",
+    "Finances",
+    "Financial Report"
+])
 
 # ─── Dashboard ─────────────────────────────────────────────────────────
 if page == "Dashboard":
@@ -124,181 +128,170 @@ if page == "Dashboard":
 
     col1, col2, col3 = st.columns(3)
     col1.metric("Total Students", conn.execute("SELECT COUNT(*) FROM students").fetchone()[0])
-    col2.metric("Total Uniform Items", conn.execute("SELECT SUM(stock) FROM uniforms").fetchone()[0] or 0)
+    col2.metric("Total Uniform Stock", conn.execute("SELECT SUM(stock) FROM uniforms").fetchone()[0] or 0)
 
-    total_inc = conn.execute("SELECT SUM(amount) FROM incomes").fetchone()[0] or 0
-    total_exp = conn.execute("SELECT SUM(amount) FROM expenses").fetchone()[0] or 0
-    col3.metric("Net Balance (All Time)", f"USh {total_inc - total_exp:,.0f}")
+    inc_sum = conn.execute("SELECT SUM(amount) FROM incomes").fetchone()[0] or 0
+    exp_sum = conn.execute("SELECT SUM(amount) FROM expenses").fetchone()[0] or 0
+    col3.metric("Net Balance (All Time)", f"USh {inc_sum - exp_sum:,.0f}")
 
 # ─── Students ──────────────────────────────────────────────────────────
 elif page == "Students":
     st.header("Students")
 
-    tab1, tab2 = st.tabs(["View & Export", "Add Student"])
+    tab_view, tab_add = st.tabs(["View / Export", "Add Student"])
 
-    with tab1:
+    with tab_view:
         df = pd.read_sql_query("""
-            SELECT s.id, s.name, s.age, s.enrollment_date, c.name as class_name
+            SELECT s.id, s.name, s.age, s.enrollment_date, c.name AS class_name
             FROM students s
             LEFT JOIN classes c ON s.class_id = c.id
         """, conn)
         st.dataframe(df, use_container_width=True)
 
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        buf = BytesIO()
+        with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
             df.to_excel(writer, sheet_name='Students', index=False)
-        output.seek(0)
+        buf.seek(0)
         st.download_button(
-            "Download Students Excel",
-            output,
+            label="Download Students Excel",
+            data=buf,
             file_name="costa_students.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-    with tab2:
-        with st.form("add_student"):
-            name = st.text_input("Full Name")
+    with tab_add:
+        with st.form("add_student_form"):
+            name = st.text_input("Full name")
             age = st.number_input("Age", 5, 30, 10)
-            enroll_date = st.date_input("Enrollment Date", datetime.today())
-            classes_df = pd.read_sql("SELECT id, name FROM classes", conn)
-            class_name = st.selectbox("Class", classes_df["name"] if not classes_df.empty else ["No classes yet"])
-            class_id = classes_df[classes_df["name"] == class_name]["id"].iloc[0] if not classes_df.empty and class_name != "No classes yet" else None
+            enroll_date = st.date_input("Enrollment date", datetime.today())
+            cls_df = pd.read_sql("SELECT id, name FROM classes", conn)
+            cls_name = st.selectbox("Class", cls_df["name"] if not cls_df.empty else ["No classes yet"])
+            cls_id = cls_df[cls_df["name"] == cls_name]["id"].iloc[0] if not cls_df.empty and cls_name != "No classes yet" else None
 
-            if st.form_submit_button("Add Student") and name and class_id:
+            if st.form_submit_button("Add Student") and name and cls_id is not None:
                 cursor.execute(
                     "INSERT INTO students (name, age, enrollment_date, class_id) VALUES (?, ?, ?, ?)",
-                    (name, age, enroll_date, int(class_id))
+                    (name, age, enroll_date, int(cls_id))
                 )
                 conn.commit()
                 st.success("Student added")
                 st.rerun()
 
-    with st.expander("Add New Class"):
-        new_class = st.text_input("Class name (e.g. P.1, S.1)")
-        if st.button("Add Class") and new_class:
+    with st.expander("Add new class"):
+        new_cls = st.text_input("Class name (e.g. P.1, S.2)")
+        if st.button("Create class") and new_cls:
             try:
-                cursor.execute("INSERT INTO classes (name) VALUES (?)", (new_class,))
+                cursor.execute("INSERT INTO classes (name) VALUES (?)", (new_cls,))
                 conn.commit()
-                st.success(f"Class '{new_class}' added")
+                st.success(f"Class {new_cls} created")
             except sqlite3.IntegrityError:
-                st.error("Class already exists")
+                st.error("Class name already exists")
 
 # ─── Uniforms ──────────────────────────────────────────────────────────
 elif page == "Uniforms":
-    st.header("Uniforms Inventory")
+    st.header("Uniforms")
 
     df = pd.read_sql("SELECT * FROM uniforms", conn)
     st.dataframe(df, use_container_width=True)
 
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
         df.to_excel(writer, sheet_name='Uniforms', index=False)
-    output.seek(0)
-    st.download_button("Download Uniforms Excel", output, "uniforms.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    buf.seek(0)
+    st.download_button("Download Uniforms Excel", buf, "uniforms.xlsx",
+                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     with st.form("add_uniform"):
-        utype = st.text_input("Type (Shirt, Skirt, Trouser, etc.)")
-        size = st.text_input("Size (S, M, L, XL, etc.)")
-        stock = st.number_input("Current Stock", 0, step=1)
-        cost = st.number_input("Unit Cost (UGX)", 0.0, step=500.0)
+        utype = st.text_input("Type")
+        size  = st.text_input("Size")
+        stock = st.number_input("Stock", 0, step=1)
+        cost  = st.number_input("Unit cost (UGX)", 0.0, step=500.0)
 
-        if st.form_submit_button("Add Uniform Item"):
+        if st.form_submit_button("Add item"):
             cursor.execute(
-                "INSERT INTO uniforms (type, size, stock, unit_cost) VALUES (?, ?, ?, ?)",
+                "INSERT INTO uniforms (type, size, stock, unit_cost) VALUES (?,?,?,?)",
                 (utype, size, stock, cost)
             )
             conn.commit()
-            st.success("Uniform added")
+            st.success("Item added")
             st.rerun()
 
 # ─── Finances ──────────────────────────────────────────────────────────
 elif page == "Finances":
     st.header("Income & Expenses")
 
-    col1, col2 = st.columns(2)
+    c1, c2 = st.columns(2)
 
-    with col1:
-        st.subheader("Record Expense")
-        with st.form("expense"):
-            date = st.date_input("Date")
-            amount = st.number_input("Amount (UGX)", 0.0, step=1000.0)
-            category = st.text_input("Category (Salaries, Rent, Supplies, etc.)")
-            if st.form_submit_button("Save Expense"):
-                cursor.execute("INSERT INTO expenses (date, amount, category) VALUES (?,?,?)",
-                               (date, amount, category))
+    with c1:
+        st.subheader("Expense")
+        with st.form("exp"):
+            d = st.date_input("Date")
+            a = st.number_input("Amount", 0.0, step=1000.0)
+            cat = st.text_input("Category")
+            if st.form_submit_button("Save"):
+                cursor.execute("INSERT INTO expenses (date, amount, category) VALUES (?,?,?)", (d, a, cat))
                 conn.commit()
-                st.success("Expense recorded")
+                st.success("Saved")
 
-    with col2:
-        st.subheader("Record Income")
-        with st.form("income"):
-            date = st.date_input("Date")
-            amount = st.number_input("Amount (UGX)", 0.0, step=1000.0)
-            source = st.text_input("Source (Fees, Donation, Uniform sales, etc.)")
-            if st.form_submit_button("Save Income"):
-                cursor.execute("INSERT INTO incomes (date, amount, source) VALUES (?,?,?)",
-                               (date, amount, source))
+    with c2:
+        st.subheader("Income")
+        with st.form("inc"):
+            d = st.date_input("Date")
+            a = st.number_input("Amount", 0.0, step=1000.0)
+            src = st.text_input("Source")
+            if st.form_submit_button("Save"):
+                cursor.execute("INSERT INTO incomes (date, amount, source) VALUES (?,?,?)", (d, a, src))
                 conn.commit()
-                st.success("Income recorded")
-
-    # Recent records
-    st.subheader("Recent Transactions")
-    tab_exp, tab_inc = st.tabs(["Expenses", "Incomes"])
-    with tab_exp:
-        df_exp = pd.read_sql("SELECT * FROM expenses ORDER BY date DESC LIMIT 15", conn)
-        st.dataframe(df_exp)
-    with tab_inc:
-        df_inc = pd.read_sql("SELECT * FROM incomes ORDER BY date DESC LIMIT 15", conn)
-        st.dataframe(df_inc)
+                st.success("Saved")
 
 # ─── Financial Report ──────────────────────────────────────────────────
 elif page == "Financial Report":
     st.header("Financial Report")
 
-    col1, col2 = st.columns(2)
-    start = col1.date_input("Start date", datetime(datetime.today().year, 1, 1))
-    end   = col2.date_input("End date", datetime.today())
+    c1, c2 = st.columns(2)
+    start = c1.date_input("From", datetime(datetime.today().year, 1, 1))
+    end   = c2.date_input("To", datetime.today())
 
-    if st.button("Generate Report"):
-        df_exp = pd.read_sql_query("SELECT * FROM expenses WHERE date BETWEEN ? AND ?", conn, params=(start, end))
-        df_inc = pd.read_sql_query("SELECT * FROM incomes  WHERE date BETWEEN ? AND ?", conn, params=(start, end))
+    if st.button("Generate"):
+        ex = pd.read_sql_query("SELECT * FROM expenses WHERE date BETWEEN ? AND ?", conn, params=(start, end))
+        inc = pd.read_sql_query("SELECT * FROM incomes WHERE date BETWEEN ? AND ?", conn, params=(start, end))
 
-        total_exp = df_exp["amount"].sum()
-        total_inc = df_inc["amount"].sum()
-        balance   = total_inc - total_exp
+        tot_ex = ex["amount"].sum()
+        tot_inc = inc["amount"].sum()
+        bal = tot_inc - tot_ex
 
-        st.metric("Total Income",   f"USh {total_inc:,.0f}")
-        st.metric("Total Expenses", f"USh {total_exp:,.0f}")
-        st.metric("Balance",        f"USh {balance:,.0f}", delta_color="normal")
+        st.metric("Income", f"USh {tot_inc:,.0f}")
+        st.metric("Expenses", f"USh {tot_ex:,.0f}")
+        st.metric("Balance", f"USh {bal:,.0f}")
 
-        tab1, tab2 = st.tabs(["Incomes", "Expenses"])
-        with tab1: st.dataframe(df_inc)
-        with tab2: st.dataframe(df_exp)
+        t1, t2 = st.tabs(["Incomes", "Expenses"])
+        with t1: st.dataframe(inc)
+        with t2: st.dataframe(ex)
 
         # PDF
-        buffer = BytesIO()
-        pdf = canvas.Canvas(buffer, pagesize=letter)
-        pdf.drawString(100, 750, "Costa School Financial Report")
-        pdf.drawString(100, 730, f"Period: {start} to {end}")
+        pdf_buf = BytesIO()
+        pdf = canvas.Canvas(pdf_buf, pagesize=letter)
+        pdf.drawString(100, 750, "Costa School - Financial Report")
+        pdf.drawString(100, 730, f"{start}  –  {end}")
         y = 680
-        pdf.drawString(100, y, f"Total Income:   USh {total_inc:,.0f}"); y -= 40
-        pdf.drawString(100, y, f"Total Expenses: USh {total_exp:,.0f}"); y -= 40
-        pdf.drawString(100, y, f"Balance:        USh {balance:,.0f}")
+        pdf.drawString(100, y, f"Income:   {tot_inc:,.0f}"); y -= 40
+        pdf.drawString(100, y, f"Expenses: {tot_ex:,.0f}"); y -= 40
+        pdf.drawString(100, y, f"Balance:  {bal:,.0f}")
         pdf.save()
-        buffer.seek(0)
-        st.download_button("Download PDF", buffer, f"report_{start}_to_{end}.pdf", "application/pdf")
+        pdf_buf.seek(0)
+        st.download_button("PDF", pdf_buf, f"report_{start}_{end}.pdf", "application/pdf")
 
         # Excel
-        excel_buffer = BytesIO()
-        with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
-            df_inc.to_excel(writer, sheet_name="Incomes", index=False)
-            df_exp.to_excel(writer, sheet_name="Expenses", index=False)
+        ex_buf = BytesIO()
+        with pd.ExcelWriter(ex_buf, engine='xlsxwriter') as w:
+            inc.to_excel(w, sheet_name="Incomes", index=False)
+            ex.to_excel(w, sheet_name="Expenses", index=False)
             pd.DataFrame({
                 "Metric": ["Total Income", "Total Expenses", "Balance"],
-                "Value (UGX)": [total_inc, total_exp, balance]
-            }).to_excel(writer, sheet_name="Summary", index=False)
-        excel_buffer.seek(0)
-        st.download_button("Download Excel Report", excel_buffer, f"financial_report_{start}_to_{end}.xlsx",
+                "Value": [tot_inc, tot_ex, bal]
+            }).to_excel(w, sheet_name="Summary", index=False)
+        ex_buf.seek(0)
+        st.download_button("Excel", ex_buf, f"financial_{start}_{end}.xlsx",
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-st.sidebar.info("SQLite database is persistent on Streamlit Cloud")
+st.sidebar.info("Data stored in SQLite – persistent on Streamlit Cloud")
