@@ -160,6 +160,7 @@ elif page == "Uniforms":
 
     with tab_view:
         st.subheader("Current Inventory")
+        # Force fresh query
         df = pd.read_sql_query("""
             SELECT uc.category, uc.gender, uc.is_shared, u.stock, u.unit_price
             FROM uniforms u JOIN uniform_categories uc ON u.category_id = uc.id
@@ -167,7 +168,7 @@ elif page == "Uniforms":
         """, conn)
         st.dataframe(df, use_container_width=True)
 
-        if st.button("Refresh Inventory"):
+        if st.button("Refresh Inventory Now"):
             st.rerun()
 
         buf = BytesIO()
@@ -189,7 +190,7 @@ elif page == "Uniforms":
             st.write(f"**Current stock:** {curr_stock}")
             st.write(f"**Current unit price:** USh {curr_price:,.0f}")
 
-            with st.form("update_uniform", clear_on_submit=True):
+            with st.form("update_uniform"):
                 new_stock = st.number_input("New Stock Level", min_value=0, value=curr_stock)
                 new_price = st.number_input("New Unit Price (USh)", min_value=0.0, value=curr_price, step=500.0)
 
@@ -197,8 +198,8 @@ elif page == "Uniforms":
                     cursor.execute("UPDATE uniforms SET stock = ?, unit_price = ? WHERE category_id = ?",
                                    (new_stock, new_price, cat_id))
                     conn.commit()
-                    time.sleep(0.8)  # Give DB time to settle on cloud
-                    st.success(f"Updated to **{new_stock}** items at USh **{new_price:,.0f}**")
+                    time.sleep(1.0)  # Increased delay for cloud DB flush
+                    st.success(f"**Updated successfully!** Now {new_stock} items at USh {new_price:,.0f}")
                     st.rerun()
 
     with tab_sale:
@@ -213,7 +214,7 @@ elif page == "Uniforms":
             st.write(f"**Available stock:** {curr_stock}")
             st.write(f"**Unit price:** USh {unit_price:,.0f}")
 
-            with st.form("sell_uniform", clear_on_submit=True):
+            with st.form("sell_uniform"):
                 quantity = st.number_input("Quantity to Sell", min_value=1, max_value=curr_stock or 1, value=1)
                 sale_date = st.date_input("Sale Date", datetime.today())
 
@@ -226,8 +227,8 @@ elif page == "Uniforms":
                         cursor.execute("INSERT INTO incomes (date, amount, source) VALUES (?, ?, ?)",
                                        (sale_date, total_amount, f"Uniform Sale - {selected_cat}"))
                         conn.commit()
-                        time.sleep(0.8)  # Ensure change is visible
-                        st.success(f"Sold {quantity} × {selected_cat} for USh {total_amount:,.0f}")
+                        time.sleep(1.0)
+                        st.success(f"Sold {quantity} items for USh {total_amount:,.0f}. Income recorded.")
                         st.rerun()
 
 # ─── Finances ──────────────────────────────────────────────────────────
