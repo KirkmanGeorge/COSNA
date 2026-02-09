@@ -267,7 +267,6 @@ def initialize_database():
                 cursor.execute("INSERT INTO expense_categories (name, category_type) VALUES (?, ?)", (cat, cat_type))
                 conn.commit()
             except sqlite3.IntegrityError:
-                # Try without category_type if the column doesn't exist
                 cursor.execute("INSERT INTO expense_categories (name) VALUES (?)", (cat,))
                 conn.commit()
     
@@ -659,6 +658,7 @@ elif page == "Students":
                                 
                                 conn.commit()
                                 st.success("Payment recorded successfully!")
+                                st.rerun()
                 else:
                     st.info("No invoices found for this student")
             except:
@@ -754,8 +754,6 @@ elif page == "Uniforms":
                     st.rerun()
                 else:
                     conn.close()
-        else:
-            conn.close()
 
     with tab_sale:
         conn = get_db_connection()
@@ -827,7 +825,7 @@ elif page == "Finances":
             with col1:
                 date = st.date_input("Date", datetime.today())
                 receipt_number = st.text_input("Receipt Number", value=generate_receipt_number())
-                amount = st.number_input("Amount (USh)", min_value=0.0, step=1000.0, value=0.0)
+                amount = st.number_input("Amount (USh)", min_value=0.0, step=1000.0)
                 
                 # Income categories
                 conn = get_db_connection()
@@ -1282,7 +1280,7 @@ elif page == "Finances":
         
         conn.close()
 
-# ─── Financial Report (Fixed to show expenses) ────────────────────────
+# ─── Financial Report ──────────────────────────────────────────────────
 elif page == "Financial Report":
     st.header("Financial Report")
 
@@ -1389,7 +1387,7 @@ elif page == "Financial Report":
         st.download_button("Download PDF Report", pdf_buf, f"financial_report_{start}_to_{end}.pdf", "application/pdf")
         conn.close()
 
-# ─── Fee Management (Fixed with submit button) ────────────────────────
+# ─── Fee Management ────────────────────────────────────────────────────
 elif page == "Fee Management":
     st.header("🎓 Fee Management System")
     
@@ -1432,7 +1430,6 @@ elif page == "Fee Management":
             total_fee = tuition_fee + uniform_fee + activity_fee + exam_fee + library_fee + other_fee
             st.info(f"**Total Fee:** USh {total_fee:,.0f}")
             
-            # SUBMIT BUTTON ADDED
             if st.form_submit_button("💾 Save Fee Structure") and class_id is not None:
                 cursor = conn.cursor()
                 try:
@@ -1522,18 +1519,21 @@ elif page == "Fee Management":
                     # Get fee amount
                     fee_amount = st.number_input("Fee Amount per Student (USh)", min_value=0.0, value=0.0, step=1000.0)
                     
-                    # SUBMIT BUTTON ADDED - MUST BE INSIDE THE FORM
+                    # SUBMIT BUTTON
                     submit_button = st.form_submit_button("📄 Generate Invoices")
                     
                     if submit_button:
                         if fee_amount > 0 and selected_students:
                             cursor = conn.cursor()
                             invoices_created = 0
+                            generated_invoices = []  # Collect for preview
                             
                             for student_option in selected_students:
                                 student_id = int(student_option.split("(ID: ")[1].replace(")", ""))
+                                student_name = student_option.split(" (ID:")[0]
                                 
-                                # Generate invoice
+                                inv_num = f"{invoice_number}-{student_id}"
+                                
                                 try:
                                     cursor.execute("""
                                         INSERT INTO invoices 
@@ -1541,7 +1541,7 @@ elif page == "Fee Management":
                                          term, total_amount, paid_amount, balance_amount, status, notes)
                                         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'Pending', ?)
                                     """, (
-                                        f"{invoice_number}-{student_id}",
+                                        inv_num,
                                         student_id,
                                         issue_date,
                                         due_date,
@@ -1552,13 +1552,48 @@ elif page == "Fee Management":
                                         notes
                                     ))
                                     invoices_created += 1
+                                    
+                                    # Collect for preview
+                                    generated_invoices.append({
+                                        'Invoice Number': inv_num,
+                                        'Student': student_name,
+                                        'Class': selected_class,
+                                        'Issue Date': issue_date,
+                                        'Due Date': due_date,
+                                        'Total Amount (USh)': fee_amount,
+                                        'Status': 'Pending'
+                                    })
+                                    
                                 except Exception as e:
-                                    st.error(f"Error creating invoice for student {student_id}: {e}")
+                                    st.error(f"Error creating invoice for {student_name}: {e}")
                             
                             conn.commit()
-                            st.success(f"✅ {invoices_created} invoices generated successfully!")
-                            time.sleep(1)
-                            st.rerun()
+                            
+                            if invoices_created > 0:
+                                st.success(f"✅ {invoices_created} invoices generated successfully!")
+                                
+                                # Show preview
+                                with st.expander("📄 Preview Generated Invoices", expanded=True):
+                                    if generated_invoices:
+                                        preview_df = pd.DataFrame(generated_invoices)
+                                        st.dataframe(preview_df, width='stretch')
+                                        
+                                        # Optional: download preview as Excel
+                                        buf = BytesIO()
+                                        with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+                                            preview_df.to_excel(writer, sheet_name='Generated Invoices', index=False)
+                                        buf.seek(0)
+                                        st.download_button(
+                                            "📥 Download Preview as Excel",
+                                            buf,
+                                            f"preview_invoices_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                        )
+                                    else:
+                                        st.info("No invoices were generated successfully.")
+                                
+                                time.sleep(1)
+                                st.rerun()
                         else:
                             if fee_amount <= 0:
                                 st.error("❌ Please enter a fee amount greater than 0")
