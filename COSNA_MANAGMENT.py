@@ -1380,6 +1380,7 @@ elif page == "Fee Management":
             total_fee = tuition_fee + uniform_fee + activity_fee + exam_fee + library_fee + other_fee
             st.info(f"**Total Fee:** USh {total_fee:,.0f}")
             
+            # ADD SUBMIT BUTTON HERE
             if st.form_submit_button("Save Fee Structure") and class_id is not None:
                 cursor = conn.cursor()
                 try:
@@ -1392,6 +1393,8 @@ elif page == "Fee Management":
                           exam_fee, library_fee, other_fee, total_fee))
                     conn.commit()
                     st.success("Fee structure saved successfully!")
+                    time.sleep(1)
+                    st.rerun()
                 except Exception as e:
                     st.error(f"Error saving fee structure: {e}")
         
@@ -1467,8 +1470,11 @@ elif page == "Fee Management":
                     # Get fee amount
                     fee_amount = st.number_input("Fee Amount per Student (USh)", min_value=0.0, value=0.0, step=1000.0)
                     
-                    if st.form_submit_button("📄 Generate Invoices"):
-                        if fee_amount > 0:
+                    # ADD SUBMIT BUTTON HERE - MUST BE INSIDE THE FORM
+                    submit_button = st.form_submit_button("📄 Generate Invoices")
+                    
+                    if submit_button:
+                        if fee_amount > 0 and selected_students:
                             cursor = conn.cursor()
                             invoices_created = 0
                             
@@ -1499,10 +1505,17 @@ elif page == "Fee Management":
                             
                             conn.commit()
                             st.success(f"✅ {invoices_created} invoices generated successfully!")
+                            time.sleep(1)
+                            st.rerun()
                         else:
-                            st.error("Please enter a fee amount greater than 0")
+                            if fee_amount <= 0:
+                                st.error("Please enter a fee amount greater than 0")
+                            if not selected_students:
+                                st.error("Please select at least one student")
                 else:
                     st.info(f"No students found in {selected_class}")
+            else:
+                st.info("Please select a class first")
         
         conn.close()
     
