@@ -1282,7 +1282,7 @@ elif page == "Finances":
         
         conn.close()
 
-# ─── Financial Report (Existing) ──────────────────────────────────────
+# ─── Financial Report (Fixed to show expenses) ────────────────────────
 elif page == "Financial Report":
     st.header("Financial Report")
 
@@ -1292,38 +1292,71 @@ elif page == "Financial Report":
 
     if st.button("Generate Report"):
         conn = get_db_connection()
+        
+        # FIXED: Get expenses with proper category join
         try:
-            exp = pd.read_sql_query("SELECT e.date, e.amount, ec.name AS category FROM expenses e JOIN expense_categories ec ON e.category_id = ec.id WHERE e.date BETWEEN ? AND ?", conn, params=(start, end))
+            # First check if expenses table has category_id column
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(expenses)")
+            columns = [col[1] for col in cursor.fetchall()]
+            
+            if 'category_id' in columns:
+                # New structure with category_id
+                exp = pd.read_sql_query("""
+                    SELECT e.date, e.amount, ec.name AS category, e.description
+                    FROM expenses e 
+                    LEFT JOIN expense_categories ec ON e.category_id = ec.id 
+                    WHERE e.date BETWEEN ? AND ?
+                    ORDER BY e.date DESC
+                """, conn, params=(start, end))
+            else:
+                # Old structure without category_id
+                exp = pd.read_sql_query("SELECT date, amount, description FROM expenses WHERE date BETWEEN ? AND ? ORDER BY date DESC", conn, params=(start, end))
+        except Exception as e:
+            st.error(f"Error loading expenses: {e}")
+            exp = pd.DataFrame(columns=['date', 'amount', 'category', 'description'])
+        
+        # Get incomes
+        try:
+            inc = pd.read_sql_query("""
+                SELECT date, amount, source, description 
+                FROM incomes 
+                WHERE date BETWEEN ? AND ?
+                ORDER BY date DESC
+            """, conn, params=(start, end))
         except:
             try:
-                exp = pd.read_sql_query("SELECT date, amount FROM expenses WHERE date BETWEEN ? AND ?", conn, params=(start, end))
+                inc = pd.read_sql_query("SELECT date, amount, source FROM incomes WHERE date BETWEEN ? AND ? ORDER BY date DESC", conn, params=(start, end))
             except:
-                exp = pd.DataFrame(columns=['date', 'amount', 'category'])
-        
-        try:
-            inc = pd.read_sql_query("SELECT date, amount, source FROM incomes WHERE date BETWEEN ? AND ?", conn, params=(start, end))
-        except:
-            inc = pd.DataFrame(columns=['date', 'amount', 'source'])
+                inc = pd.DataFrame(columns=['date', 'amount', 'source', 'description'])
 
-        total_exp = exp["amount"].sum() if not exp.empty else 0
-        total_inc = inc["amount"].sum() if not inc.empty else 0
+        # Calculate totals
+        total_exp = exp["amount"].sum() if not exp.empty and 'amount' in exp.columns else 0
+        total_inc = inc["amount"].sum() if not inc.empty and 'amount' in inc.columns else 0
         balance = total_inc - total_exp
 
-        st.metric("Total Income", f"USh {total_inc:,.0f}")
-        st.metric("Total Expenses", f"USh {total_exp:,.0f}")
-        st.metric("Balance", f"USh {balance:,.0f}")
+        # Display metrics
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Income", f"USh {total_inc:,.0f}")
+        col2.metric("Total Expenses", f"USh {total_exp:,.0f}")
+        col3.metric("Balance", f"USh {balance:,.0f}")
 
-        tab1, tab2 = st.tabs(["Incomes", "Expenses"])
-        if not inc.empty:
-            tab1.dataframe(inc, width='stretch')
-        else:
-            tab1.info("No income records for this period")
+        # Display dataframes in tabs
+        tab1, tab2 = st.tabs(["📈 Incomes", "📉 Expenses"])
         
-        if not exp.empty:
-            tab2.dataframe(exp, width='stretch')
-        else:
-            tab2.info("No expense records for this period")
+        with tab1:
+            if not inc.empty:
+                st.dataframe(inc, width='stretch')
+            else:
+                st.info("No income records for this period")
+        
+        with tab2:
+            if not exp.empty:
+                st.dataframe(exp, width='stretch')
+            else:
+                st.info("No expense records for this period")
 
+        # Generate PDF report
         pdf_buf = BytesIO()
         pdf = canvas.Canvas(pdf_buf, pagesize=letter)
         pdf.drawString(100, 750, "COSNA School Financial Report")
@@ -1331,13 +1364,32 @@ elif page == "Financial Report":
         y = 680
         pdf.drawString(100, y, f"Total Income: USh {total_inc:,.0f}"); y -= 40
         pdf.drawString(100, y, f"Total Expenses: USh {total_exp:,.0f}"); y -= 40
-        pdf.drawString(100, y, f"Balance: USh {balance:,.0f}")
+        pdf.drawString(100, y, f"Balance: USh {balance:,.0f}"); y -= 60
+        
+        # Add income details
+        pdf.drawString(100, y, "Income Details:"); y -= 20
+        if not inc.empty:
+            for _, row in inc.head(10).iterrows():
+                pdf.drawString(120, y, f"{row['date']}: {row.get('source', 'Income')} - USh {row['amount']:,.0f}")
+                y -= 20
+                if y < 100:
+                    pdf.showPage()
+                    y = 750
+        
+        # Add expense details
+        pdf.drawString(100, y, "Expense Details:"); y -= 20
+        if not exp.empty:
+            for _, row in exp.head(10).iterrows():
+                description = row.get('description', '') or row.get('category', 'Expense')
+                pdf.drawString(120, y, f"{row['date']}: {description} - USh {row['amount']:,.0f}")
+                y -= 20
+        
         pdf.save()
         pdf_buf.seek(0)
-        st.download_button("Download PDF", pdf_buf, f"report_{start}_to_{end}.pdf", "application/pdf")
+        st.download_button("Download PDF Report", pdf_buf, f"financial_report_{start}_to_{end}.pdf", "application/pdf")
         conn.close()
 
-# ─── NEW: Fee Management ──────────────────────────────────────────────
+# ─── Fee Management (Fixed with submit button) ────────────────────────
 elif page == "Fee Management":
     st.header("🎓 Fee Management System")
     
@@ -1380,8 +1432,8 @@ elif page == "Fee Management":
             total_fee = tuition_fee + uniform_fee + activity_fee + exam_fee + library_fee + other_fee
             st.info(f"**Total Fee:** USh {total_fee:,.0f}")
             
-            # ADD SUBMIT BUTTON HERE
-            if st.form_submit_button("Save Fee Structure") and class_id is not None:
+            # SUBMIT BUTTON ADDED
+            if st.form_submit_button("💾 Save Fee Structure") and class_id is not None:
                 cursor = conn.cursor()
                 try:
                     cursor.execute("""
@@ -1392,7 +1444,7 @@ elif page == "Fee Management":
                     """, (class_id, term, academic_year, tuition_fee, uniform_fee, activity_fee, 
                           exam_fee, library_fee, other_fee, total_fee))
                     conn.commit()
-                    st.success("Fee structure saved successfully!")
+                    st.success("✅ Fee structure saved successfully!")
                     time.sleep(1)
                     st.rerun()
                 except Exception as e:
@@ -1470,7 +1522,7 @@ elif page == "Fee Management":
                     # Get fee amount
                     fee_amount = st.number_input("Fee Amount per Student (USh)", min_value=0.0, value=0.0, step=1000.0)
                     
-                    # ADD SUBMIT BUTTON HERE - MUST BE INSIDE THE FORM
+                    # SUBMIT BUTTON ADDED - MUST BE INSIDE THE FORM
                     submit_button = st.form_submit_button("📄 Generate Invoices")
                     
                     if submit_button:
@@ -1509,13 +1561,13 @@ elif page == "Fee Management":
                             st.rerun()
                         else:
                             if fee_amount <= 0:
-                                st.error("Please enter a fee amount greater than 0")
+                                st.error("❌ Please enter a fee amount greater than 0")
                             if not selected_students:
-                                st.error("Please select at least one student")
+                                st.error("❌ Please select at least one student")
                 else:
-                    st.info(f"No students found in {selected_class}")
+                    st.info(f"📝 No students found in {selected_class}")
             else:
-                st.info("Please select a class first")
+                st.info("📝 Please select a class first")
         
         conn.close()
     
