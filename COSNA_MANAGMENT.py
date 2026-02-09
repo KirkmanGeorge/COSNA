@@ -45,13 +45,39 @@ def initialize_database():
     conn = get_db_connection()
     cursor = conn.cursor()
     
+    # Create tables if they don't exist
     cursor.execute('''CREATE TABLE IF NOT EXISTS classes (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS students (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, age INTEGER, enrollment_date DATE, class_id INTEGER, student_type TEXT, registration_fee_paid BOOLEAN DEFAULT 0, FOREIGN KEY(class_id) REFERENCES classes(id))''')
+    
+    # Create students table with all columns
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS students (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, 
+            name TEXT, 
+            age INTEGER, 
+            enrollment_date DATE, 
+            class_id INTEGER,
+            student_type TEXT DEFAULT 'Returning',
+            registration_fee_paid BOOLEAN DEFAULT 0,
+            FOREIGN KEY(class_id) REFERENCES classes(id)
+        )
+    ''')
+    
     cursor.execute('''CREATE TABLE IF NOT EXISTS uniform_categories (id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT UNIQUE, gender TEXT, is_shared INTEGER DEFAULT 0)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS uniforms (id INTEGER PRIMARY KEY AUTOINCREMENT, category_id INTEGER UNIQUE, stock INTEGER DEFAULT 0, unit_price REAL DEFAULT 0.0, FOREIGN KEY(category_id) REFERENCES uniform_categories(id))''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS expense_categories (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, date DATE, amount REAL, category_id INTEGER, FOREIGN KEY(category_id) REFERENCES expense_categories(id))''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS incomes (id INTEGER PRIMARY KEY AUTOINCREMENT, date DATE, amount REAL, source TEXT, student_id INTEGER, FOREIGN KEY(student_id) REFERENCES students(id))''')
+    
+    # Create incomes table with student_id column
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS incomes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, 
+            date DATE, 
+            amount REAL, 
+            source TEXT,
+            student_id INTEGER DEFAULT NULL,
+            FOREIGN KEY(student_id) REFERENCES students(id)
+        )
+    ''')
     conn.commit()
 
     # Seed uniforms
@@ -80,6 +106,22 @@ def initialize_database():
             cursor.execute("INSERT INTO expense_categories (name) VALUES (?)", (cat,))
             conn.commit()
     
+    # Check if we need to add student_type column to existing students table
+    try:
+        cursor.execute("SELECT student_type FROM students LIMIT 1")
+    except sqlite3.OperationalError:
+        # Column doesn't exist, add it
+        cursor.execute("ALTER TABLE students ADD COLUMN student_type TEXT DEFAULT 'Returning'")
+        cursor.execute("ALTER TABLE students ADD COLUMN registration_fee_paid BOOLEAN DEFAULT 0")
+    
+    # Check if we need to add student_id column to existing incomes table
+    try:
+        cursor.execute("SELECT student_id FROM incomes LIMIT 1")
+    except sqlite3.OperationalError:
+        # Column doesn't exist, add it
+        cursor.execute("ALTER TABLE incomes ADD COLUMN student_id INTEGER DEFAULT NULL")
+    
+    conn.commit()
     conn.close()
 
 initialize_database()
@@ -92,13 +134,43 @@ if page == "Dashboard":
     conn = get_db_connection()
     st.header("Overview")
     col1, col2, col3 = st.columns(3)
-    col1.metric("Total Students", conn.execute("SELECT COUNT(*) FROM students").fetchone()[0])
-    col2.metric("New Students", conn.execute("SELECT COUNT(*) FROM students WHERE student_type = 'New'").fetchone()[0])
-    col3.metric("Net Balance", f"USh {(conn.execute('SELECT SUM(amount) FROM incomes').fetchone()[0] or 0) - (conn.execute('SELECT SUM(amount) FROM expenses').fetchone()[0] or 0):,.0f}")
+    
+    # Safely get total students count
+    try:
+        total_students = conn.execute("SELECT COUNT(*) FROM students").fetchone()[0]
+    except:
+        total_students = 0
+    
+    # Safely get new students count
+    try:
+        new_students = conn.execute("SELECT COUNT(*) FROM students WHERE student_type = 'New'").fetchone()[0]
+    except:
+        new_students = 0
+    
+    # Safely get net balance
+    try:
+        total_income = conn.execute("SELECT SUM(amount) FROM incomes").fetchone()[0] or 0
+    except:
+        total_income = 0
+    
+    try:
+        total_expenses = conn.execute("SELECT SUM(amount) FROM expenses").fetchone()[0] or 0
+    except:
+        total_expenses = 0
+    
+    net_balance = total_income - total_expenses
+    
+    col1.metric("Total Students", total_students)
+    col2.metric("New Students", new_students)
+    col3.metric("Net Balance", f"USh {net_balance:,.0f}")
 
     st.subheader("Recent Incomes (last 5)")
-    df_inc = pd.read_sql("SELECT date, amount, source FROM incomes ORDER BY date DESC LIMIT 5", conn)
-    st.dataframe(df_inc, width='stretch')
+    try:
+        df_inc = pd.read_sql("SELECT date, amount, source FROM incomes ORDER BY date DESC LIMIT 5", conn)
+        st.dataframe(df_inc, width='stretch')
+    except:
+        st.info("No income records yet")
+    
     conn.close()
 
 # ─── Students ──────────────────────────────────────────────────────────
@@ -109,37 +181,45 @@ elif page == "Students":
 
     with tab_view:
         conn = get_db_connection()
-        classes = ["All Classes"] + pd.read_sql("SELECT name FROM classes ORDER BY name", conn)['name'].tolist()
+        try:
+            classes = ["All Classes"] + pd.read_sql("SELECT name FROM classes ORDER BY name", conn)['name'].tolist()
+        except:
+            classes = ["All Classes"]
+        
         selected_class = st.selectbox("Filter by Class", classes)
         
         # Filter by student type
         student_types = ["All Types", "New", "Returning"]
         selected_type = st.selectbox("Filter by Student Type", student_types)
 
-        query = "SELECT s.id, s.name, s.age, s.enrollment_date, c.name AS class_name, s.student_type, s.registration_fee_paid FROM students s LEFT JOIN classes c ON s.class_id = c.id"
-        conditions = []
-        params = []
-        
-        if selected_class != "All Classes":
-            conditions.append("c.name = ?")
-            params.append(selected_class)
-        
-        if selected_type != "All Types":
-            conditions.append("s.student_type = ?")
-            params.append(selected_type)
-        
-        if conditions:
-            query += " WHERE " + " AND ".join(conditions)
+        try:
+            query = "SELECT s.id, s.name, s.age, s.enrollment_date, c.name AS class_name, s.student_type, s.registration_fee_paid FROM students s LEFT JOIN classes c ON s.class_id = c.id"
+            conditions = []
+            params = []
             
-        df = pd.read_sql_query(query, conn, params=params)
-        st.dataframe(df, width='stretch')
+            if selected_class != "All Classes":
+                conditions.append("c.name = ?")
+                params.append(selected_class)
+            
+            if selected_type != "All Types":
+                conditions.append("s.student_type = ?")
+                params.append(selected_type)
+            
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
+                
+            df = pd.read_sql_query(query, conn, params=params)
+            st.dataframe(df, width='stretch')
 
-        if not df.empty:
-            buf = BytesIO()
-            with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-                df.to_excel(writer, sheet_name='Students', index=False)
-            buf.seek(0)
-            st.download_button("Download Filtered Students Excel", buf, "cosna_students.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            if not df.empty:
+                buf = BytesIO()
+                with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+                    df.to_excel(writer, sheet_name='Students', index=False)
+                buf.seek(0)
+                st.download_button("Download Filtered Students Excel", buf, "cosna_students.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        except Exception as e:
+            st.info("No student records yet or error loading data")
+        
         conn.close()
 
     with tab_add:
@@ -153,9 +233,14 @@ elif page == "Students":
                 enroll_date = st.date_input("Enrollment Date", datetime.today())
                 
             with col2:
-                cls_df = pd.read_sql("SELECT id, name FROM classes ORDER BY name", conn)
-                cls_name = st.selectbox("Class", cls_df["name"] if not cls_df.empty else ["No classes yet"])
-                cls_id = cls_df[cls_df["name"] == cls_name]["id"].iloc[0] if not cls_df.empty and cls_name != "No classes yet" else None
+                try:
+                    cls_df = pd.read_sql("SELECT id, name FROM classes ORDER BY name", conn)
+                    cls_name = st.selectbox("Class", cls_df["name"] if not cls_df.empty else ["No classes yet"])
+                    cls_id = cls_df[cls_df["name"] == cls_name]["id"].iloc[0] if not cls_df.empty and cls_name != "No classes yet" else None
+                except:
+                    cls_df = pd.DataFrame(columns=['id', 'name'])
+                    cls_name = "No classes yet"
+                    cls_id = None
                 
                 student_type = st.radio("Student Type", ["New", "Returning"], horizontal=True)
                 
@@ -338,9 +423,14 @@ elif page == "Finances":
 
     with tab_exp:
         conn = get_db_connection()
-        df_cats = pd.read_sql("SELECT id, name FROM expense_categories ORDER BY name", conn)
-        selected_cat = st.selectbox("Select Category", df_cats["name"])
-        cat_id = df_cats[df_cats["name"] == selected_cat]["id"].iloc[0] if not df_cats.empty else None
+        try:
+            df_cats = pd.read_sql("SELECT id, name FROM expense_categories ORDER BY name", conn)
+            selected_cat = st.selectbox("Select Category", df_cats["name"])
+            cat_id = df_cats[df_cats["name"] == selected_cat]["id"].iloc[0] if not df_cats.empty else None
+        except:
+            df_cats = pd.DataFrame(columns=['id', 'name'])
+            selected_cat = ""
+            cat_id = None
 
         with st.form("add_expense"):
             date = st.date_input("Date", datetime.today())
@@ -354,12 +444,16 @@ elif page == "Finances":
                 st.rerun()
 
         st.subheader("Recent Expenses")
-        df_exp = pd.read_sql_query("""
-            SELECT e.date, e.amount, ec.name AS category
-            FROM expenses e LEFT JOIN expense_categories ec ON e.category_id = ec.id
-            ORDER BY e.date DESC LIMIT 10
-        """, conn)
-        st.dataframe(df_exp, width='stretch')
+        try:
+            df_exp = pd.read_sql_query("""
+                SELECT e.date, e.amount, ec.name AS category
+                FROM expenses e LEFT JOIN expense_categories ec ON e.category_id = ec.id
+                ORDER BY e.date DESC LIMIT 10
+            """, conn)
+            st.dataframe(df_exp, width='stretch')
+        except:
+            st.info("No expense records yet")
+        
         conn.close()
 
     with tab_inc:
@@ -378,20 +472,32 @@ elif page == "Finances":
                 st.rerun()
 
         st.subheader("Recent Incomes")
-        df_inc = pd.read_sql("""
-            SELECT i.date, i.amount, i.source, s.name AS student_name 
-            FROM incomes i 
-            LEFT JOIN students s ON i.student_id = s.id 
-            ORDER BY i.date DESC LIMIT 10
-        """, conn)
-        st.dataframe(df_inc, width='stretch')
+        try:
+            df_inc = pd.read_sql("""
+                SELECT i.date, i.amount, i.source, s.name AS student_name 
+                FROM incomes i 
+                LEFT JOIN students s ON i.student_id = s.id 
+                ORDER BY i.date DESC LIMIT 10
+            """, conn)
+            st.dataframe(df_inc, width='stretch')
+        except:
+            try:
+                # Fallback if student_id column doesn't exist yet
+                df_inc = pd.read_sql("SELECT date, amount, source FROM incomes ORDER BY date DESC LIMIT 10", conn)
+                st.dataframe(df_inc, width='stretch')
+            except:
+                st.info("No income records yet")
+        
         conn.close()
 
     with tab_cat:
         conn = get_db_connection()
         st.subheader("Expense Categories")
-        df_cats = pd.read_sql("SELECT name FROM expense_categories ORDER BY name", conn)
-        st.dataframe(df_cats, width='stretch')
+        try:
+            df_cats = pd.read_sql("SELECT name FROM expense_categories ORDER BY name", conn)
+            st.dataframe(df_cats, width='stretch')
+        except:
+            st.info("No expense categories yet")
 
         with st.form("add_category"):
             new_cat = st.text_input("New Category Name")
@@ -417,16 +523,26 @@ elif page == "Financial Report":
 
     if st.button("Generate Report"):
         conn = get_db_connection()
-        exp = pd.read_sql_query("SELECT e.date, e.amount, ec.name AS category FROM expenses e JOIN expense_categories ec ON e.category_id = ec.id WHERE e.date BETWEEN ? AND ?", conn, params=(start, end))
-        inc = pd.read_sql_query("""
-            SELECT i.date, i.amount, i.source, s.name AS student_name 
-            FROM incomes i 
-            LEFT JOIN students s ON i.student_id = s.id 
-            WHERE i.date BETWEEN ? AND ?
-        """, conn, params=(start, end))
+        try:
+            exp = pd.read_sql_query("SELECT e.date, e.amount, ec.name AS category FROM expenses e JOIN expense_categories ec ON e.category_id = ec.id WHERE e.date BETWEEN ? AND ?", conn, params=(start, end))
+        except:
+            exp = pd.DataFrame(columns=['date', 'amount', 'category'])
+        
+        try:
+            inc = pd.read_sql_query("""
+                SELECT i.date, i.amount, i.source, s.name AS student_name 
+                FROM incomes i 
+                LEFT JOIN students s ON i.student_id = s.id 
+                WHERE i.date BETWEEN ? AND ?
+            """, conn, params=(start, end))
+        except:
+            try:
+                inc = pd.read_sql_query("SELECT date, amount, source FROM incomes WHERE date BETWEEN ? AND ?", conn, params=(start, end))
+            except:
+                inc = pd.DataFrame(columns=['date', 'amount', 'source'])
 
-        total_exp = exp["amount"].sum()
-        total_inc = inc["amount"].sum()
+        total_exp = exp["amount"].sum() if not exp.empty else 0
+        total_inc = inc["amount"].sum() if not inc.empty else 0
         balance = total_inc - total_exp
 
         st.metric("Total Income", f"USh {total_inc:,.0f}")
@@ -434,8 +550,15 @@ elif page == "Financial Report":
         st.metric("Balance", f"USh {balance:,.0f}")
 
         tab1, tab2 = st.tabs(["Incomes", "Expenses"])
-        tab1.dataframe(inc, width='stretch')
-        tab2.dataframe(exp, width='stretch')
+        if not inc.empty:
+            tab1.dataframe(inc, width='stretch')
+        else:
+            tab1.info("No income records for this period")
+        
+        if not exp.empty:
+            tab2.dataframe(exp, width='stretch')
+        else:
+            tab2.info("No expense records for this period")
 
         pdf_buf = BytesIO()
         pdf = canvas.Canvas(pdf_buf, pagesize=letter)
