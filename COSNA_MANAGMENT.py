@@ -559,111 +559,205 @@ elif page == "Students":
 elif page == "Uniforms":
     st.header("Uniforms – Inventory & Sales")
     
-    if 'uniform_refresh_counter' not in st.session_state:
-        st.session_state.uniform_refresh_counter = 0
-
-    tab_view, tab_update, tab_sale = st.tabs(["View Inventory", "Update Stock/Price", "Record Sale"])
-
-    def load_uniform_inventory():
+    # Initialize session state for uniform refresh
+    if 'uniform_refresh_trigger' not in st.session_state:
+        st.session_state.uniform_refresh_trigger = 0
+    
+    # Function to get fresh inventory data
+    def get_fresh_inventory():
         conn = get_db_connection()
         df = pd.read_sql_query("""
-            SELECT uc.category, uc.gender, uc.is_shared, u.stock, u.unit_price
-            FROM uniforms u JOIN uniform_categories uc ON u.category_id = uc.id
+            SELECT uc.id as cat_id, uc.category, uc.gender, uc.is_shared, 
+                   u.stock, u.unit_price
+            FROM uniforms u 
+            JOIN uniform_categories uc ON u.category_id = uc.id
             ORDER BY uc.gender, uc.category
         """, conn)
         conn.close()
         return df
-
-    inventory_df = load_uniform_inventory()
-
+    
+    # Function to update stock and trigger refresh
+    def update_uniform_stock(category_id, new_stock, new_price):
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE uniforms 
+            SET stock = ?, unit_price = ? 
+            WHERE category_id = ?
+        """, (new_stock, new_price, category_id))
+        conn.commit()
+        conn.close()
+        st.session_state.uniform_refresh_trigger += 1
+    
+    # Function to record sale and update stock
+    def record_uniform_sale(category_id, quantity, sale_date, unit_price):
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Update stock
+        cursor.execute("""
+            UPDATE uniforms 
+            SET stock = stock - ? 
+            WHERE category_id = ?
+        """, (quantity, category_id))
+        
+        # Record income
+        total_amount = quantity * unit_price
+        try:
+            category_name = cursor.execute("SELECT category FROM uniform_categories WHERE id = ?", (category_id,)).fetchone()[0]
+            cursor.execute("""
+                INSERT INTO incomes (date, receipt_number, amount, source, category_id, description, payment_method, payer, received_by) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (sale_date, generate_receipt_number(), total_amount, "Uniform Sales", 10, 
+                  f"Sale of {quantity} {category_name}", "Cash", "Walk-in Customer", "Admin"))
+        except:
+            cursor.execute("""
+                INSERT INTO incomes (date, amount, source) 
+                VALUES (?, ?, ?)
+            """, (sale_date, total_amount, f"Uniform sale: {quantity} items"))
+        
+        conn.commit()
+        conn.close()
+        st.session_state.uniform_refresh_trigger += 1
+    
+    # Get current inventory - always fresh
+    inventory_df = get_fresh_inventory()
+    
+    tab_view, tab_update, tab_sale = st.tabs(["View Inventory", "Update Stock/Price", "Record Sale"])
+    
     with tab_view:
         st.subheader("Current Inventory")
-        st.dataframe(inventory_df, width='stretch')
-        st.caption(f"Last refreshed: {st.session_state.uniform_refresh_counter}")
-
-        if st.button("🔄 Refresh Inventory", type="primary"):
-            st.session_state.uniform_refresh_counter += 1
-            st.rerun()
-
+        
+        # Display current inventory
+        display_df = inventory_df[['category', 'gender', 'is_shared', 'stock', 'unit_price']].copy()
+        display_df['unit_price'] = display_df['unit_price'].apply(lambda x: f"USh {x:,.0f}")
+        st.dataframe(display_df, width='stretch')
+        
+        # Summary statistics
+        total_stock = inventory_df['stock'].sum()
+        total_value = (inventory_df['stock'] * inventory_df['unit_price']).sum()
+        
+        col1, col2 = st.columns(2)
+        col1.metric("Total Items in Stock", f"{total_stock:,}")
+        col2.metric("Total Inventory Value", f"USh {total_value:,.0f}")
+        
+        # Export functionality
         buf = BytesIO()
         with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
             inventory_df.to_excel(writer, sheet_name='Uniform Inventory', index=False)
         buf.seek(0)
-        st.download_button("Download Inventory Excel", buf, "cosna_uniforms.xlsx",
-                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
+        st.download_button("📥 Download Inventory Excel", buf, "cosna_uniforms.xlsx",
+                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        
+        # Refresh button
+        if st.button("🔄 Refresh Inventory", type="secondary"):
+            st.rerun()
+    
     with tab_update:
+        st.subheader("Update Stock & Price")
+        
         conn = get_db_connection()
-        df_cats = pd.read_sql("SELECT id, category FROM uniform_categories ORDER BY category", conn)
-        selected_cat = st.selectbox("Select Category", df_cats["category"])
-        cat_id = df_cats[df_cats["category"] == selected_cat]["id"].iloc[0] if selected_cat else None
-
-        if cat_id:
-            current = conn.execute("SELECT stock, unit_price FROM uniforms WHERE category_id = ?", (cat_id,)).fetchone()
-            curr_stock, curr_price = current if current else (0, 0.0)
-
-            st.write(f"**Current stock:** {curr_stock}")
-            st.write(f"**Current unit price:** USh {curr_price:,.0f}")
-
-            with st.form("update_uniform"):
-                new_stock = st.number_input("New Stock Level", min_value=0, value=curr_stock)
-                new_price = st.number_input("New Unit Price (USh)", min_value=0.0, value=curr_price, step=500.0)
-
-                if st.form_submit_button("💾 Update Stock & Price", type="primary"):
-                    cursor = conn.cursor()
-                    cursor.execute("UPDATE uniforms SET stock = ?, unit_price = ? WHERE category_id = ?",
-                                   (new_stock, new_price, cat_id))
-                    conn.commit()
-                    conn.close()
-                    st.session_state.uniform_refresh_counter += 1
-                    st.success(f"✅ Updated! Now {new_stock} items at USh {new_price:,.0f}")
-                    st.rerun()  # Force refresh so other tabs see updated stock
-                else:
-                    conn.close()
-
-    with tab_sale:
-        conn = get_db_connection()
-        df_cats = pd.read_sql("SELECT id, category FROM uniform_categories ORDER BY category", conn)
-        selected_cat = st.selectbox("Select Category to Sell", df_cats["category"])
-        cat_id = df_cats[df_cats["category"] == selected_cat]["id"].iloc[0] if selected_cat else None
-
-        if cat_id:
-            current = conn.execute("SELECT stock, unit_price FROM uniforms WHERE category_id = ?", (cat_id,)).fetchone()
-            curr_stock, unit_price = current if current else (0, 0.0)
-
-            st.write(f"**Available stock:** {curr_stock}")
-            st.write(f"**Unit price:** USh {unit_price:,.0f}")
-
-            with st.form("sell_uniform"):
-                quantity = st.number_input("Quantity to Sell", min_value=1, max_value=curr_stock or 1, value=1)
-                sale_date = st.date_input("Sale Date", datetime.today())
-
-                if st.form_submit_button("💰 Record Sale", type="primary"):
-                    if quantity > curr_stock:
-                        st.error(f"❌ Not enough stock (only {curr_stock} available)")
-                        conn.close()
-                    else:
-                        total_amount = quantity * unit_price
-                        cursor = conn.cursor()
-                        cursor.execute("UPDATE uniforms SET stock = stock - ? WHERE category_id = ?", (quantity, cat_id))
-                        
-                        try:
-                            cursor.execute("INSERT INTO incomes (date, receipt_number, amount, source, category_id, description, payment_method, payer, received_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                           (sale_date, generate_receipt_number(), total_amount, "Uniform Sales", 10, 
-                                            f"Sale of {quantity} {selected_cat}", "Cash", "Walk-in Customer", "Admin"))
-                        except:
-                            cursor.execute("INSERT INTO incomes (date, amount, source) VALUES (?, ?, ?)",
-                                           (sale_date, total_amount, f"Uniform sale: {quantity} {selected_cat}"))
-                        
-                        conn.commit()
-                        conn.close()
-                        st.session_state.uniform_refresh_counter += 1
-                        st.success(f"✅ Sold {quantity} items for USh {total_amount:,.0f}. Income recorded.")
-                        st.rerun()  # Refresh to show updated stock in other tabs
-                else:
-                    conn.close()
+        categories_df = pd.read_sql("""
+            SELECT uc.id, uc.category, u.stock, u.unit_price 
+            FROM uniform_categories uc 
+            JOIN uniforms u ON uc.id = u.category_id 
+            ORDER BY uc.category
+        """, conn)
+        conn.close()
+        
+        if not categories_df.empty:
+            selected_category = st.selectbox("Select Category", categories_df["category"])
+            
+            if selected_category:
+                cat_data = categories_df[categories_df["category"] == selected_category].iloc[0]
+                cat_id = cat_data["id"]
+                current_stock = cat_data["stock"]
+                current_price = cat_data["unit_price"]
+                
+                st.write(f"**Current Stock:** {current_stock} items")
+                st.write(f"**Current Price:** USh {current_price:,.0f}")
+                
+                with st.form("update_stock_form"):
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        new_stock = st.number_input("New Stock Level", 
+                                                   min_value=0, 
+                                                   value=int(current_stock),
+                                                   step=1)
+                    
+                    with col2:
+                        new_price = st.number_input("New Unit Price (USh)", 
+                                                   min_value=0.0, 
+                                                   value=float(current_price),
+                                                   step=500.0)
+                    
+                    if st.form_submit_button("💾 Update Stock & Price", type="primary"):
+                        update_uniform_stock(cat_id, new_stock, new_price)
+                        st.success(f"✅ Updated {selected_category}: {new_stock} items at USh {new_price:,.0f}")
+                        time.sleep(1)
+                        st.rerun()
         else:
-            conn.close()
+            st.info("No uniform categories found")
+    
+    with tab_sale:
+        st.subheader("Record Uniform Sale")
+        
+        conn = get_db_connection()
+        categories_df = pd.read_sql("""
+            SELECT uc.id, uc.category, u.stock, u.unit_price 
+            FROM uniform_categories uc 
+            JOIN uniforms u ON uc.id = u.category_id 
+            WHERE u.stock > 0 
+            ORDER BY uc.category
+        """, conn)
+        conn.close()
+        
+        if not categories_df.empty:
+            selected_category = st.selectbox("Select Category to Sell", 
+                                           categories_df["category"],
+                                           key="sale_category")
+            
+            if selected_category:
+                cat_data = categories_df[categories_df["category"] == selected_category].iloc[0]
+                cat_id = cat_data["id"]
+                available_stock = cat_data["stock"]
+                unit_price = cat_data["unit_price"]
+                
+                st.info(f"**Available Stock:** {available_stock} items")
+                st.info(f"**Unit Price:** USh {unit_price:,.0f}")
+                
+                with st.form("record_sale_form"):
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        quantity = st.number_input("Quantity to Sell", 
+                                                  min_value=1, 
+                                                  max_value=int(available_stock),
+                                                  value=1,
+                                                  step=1)
+                        sale_date = st.date_input("Sale Date", datetime.today())
+                    
+                    with col2:
+                        customer_name = st.text_input("Customer Name", "Walk-in Customer")
+                        payment_method = st.selectbox("Payment Method", 
+                                                     ["Cash", "Bank Transfer", "Mobile Money", "Cheque"],
+                                                     index=0)
+                    
+                    total_amount = quantity * unit_price
+                    st.warning(f"**Total Amount:** USh {total_amount:,.0f}")
+                    
+                    if st.form_submit_button("💰 Record Sale", type="primary"):
+                        if quantity > available_stock:
+                            st.error(f"❌ Cannot sell {quantity} items. Only {available_stock} available!")
+                        else:
+                            record_uniform_sale(cat_id, quantity, sale_date, unit_price)
+                            st.success(f"✅ Sale recorded: {quantity} {selected_category} for USh {total_amount:,.0f}")
+                            st.balloons()
+                            time.sleep(2)
+                            st.rerun()
+        else:
+            st.warning("No uniform items in stock available for sale")
 
 # ─── Finances ──────────────────────────────────────────────────────────
 elif page == "Finances":
