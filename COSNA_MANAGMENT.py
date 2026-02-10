@@ -211,14 +211,13 @@ def initialize_database():
             cursor.execute("INSERT INTO uniforms (category_id, stock, unit_price) VALUES (?, 0, 0.0)", (cat_id,))
             conn.commit()
 
-    # Seed income/expense categories
+    # Seed categories
     expense_seeds = [
         ('Medical', 'Expense'), ('Salaries', 'Expense'), ('Utilities', 'Expense'),
         ('Maintenance', 'Expense'), ('Supplies', 'Expense'), ('Transport', 'Expense'),
         ('Events', 'Expense'), ('Tuition Fees', 'Income'), ('Registration Fees', 'Income'),
         ('Uniform Sales', 'Income'), ('Donations', 'Income'), ('Other Income', 'Income')
     ]
-    
     for cat, cat_type in expense_seeds:
         cursor.execute("SELECT id FROM expense_categories WHERE name = ?", (cat,))
         if not cursor.fetchone():
@@ -560,14 +559,12 @@ elif page == "Students":
 elif page == "Uniforms":
     st.header("Uniforms – Inventory & Sales")
     
-    # Session state for inventory refresh
     if 'uniform_refresh_counter' not in st.session_state:
         st.session_state.uniform_refresh_counter = 0
 
     tab_view, tab_update, tab_sale = st.tabs(["View Inventory", "Update Stock/Price", "Record Sale"])
 
-    @st.cache_data(ttl=10, show_spinner=False)
-    def load_uniform_inventory(_refresh_counter):
+    def load_uniform_inventory():
         conn = get_db_connection()
         df = pd.read_sql_query("""
             SELECT uc.category, uc.gender, uc.is_shared, u.stock, u.unit_price
@@ -577,7 +574,7 @@ elif page == "Uniforms":
         conn.close()
         return df
 
-    inventory_df = load_uniform_inventory(st.session_state.uniform_refresh_counter)
+    inventory_df = load_uniform_inventory()
 
     with tab_view:
         st.subheader("Current Inventory")
@@ -619,8 +616,8 @@ elif page == "Uniforms":
                     conn.commit()
                     conn.close()
                     st.session_state.uniform_refresh_counter += 1
-                    st.success(f"✅ **Updated!** Now {new_stock} items at USh {new_price:,.0f}")
-                    st.experimental_rerun()  # Force full refresh so sale tab sees new stock
+                    st.success(f"✅ Updated! Now {new_stock} items at USh {new_price:,.0f}")
+                    st.rerun()  # Force refresh so other tabs see updated stock
                 else:
                     conn.close()
 
@@ -662,7 +659,7 @@ elif page == "Uniforms":
                         conn.close()
                         st.session_state.uniform_refresh_counter += 1
                         st.success(f"✅ Sold {quantity} items for USh {total_amount:,.0f}. Income recorded.")
-                        st.experimental_rerun()  # Refresh to update stock display
+                        st.rerun()  # Refresh to show updated stock in other tabs
                 else:
                     conn.close()
         else:
@@ -797,13 +794,282 @@ elif page == "Finances":
         
         conn.close()
     
-    # Expense tab (shortened for brevity - same logic as previous versions)
     with tab_expense:
         st.subheader("Record Expense")
-        # ... (keep your original expense recording code here - unchanged)
+        
+        with st.form("add_expense"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                date = st.date_input("Date", datetime.today(), key="expense_date")
+                voucher_number = st.text_input("Voucher Number", value=generate_voucher_number())
+                amount = st.number_input("Amount (USh)", min_value=0.0, step=1000.0, value=0.0, key="expense_amount")
+                
+                conn = get_db_connection()
+                try:
+                    expense_cats = pd.read_sql("SELECT id, name FROM expense_categories ORDER BY name", conn)
+                    if not expense_cats.empty:
+                        expense_category = st.selectbox("Expense Category", expense_cats["name"])
+                        category_id = expense_cats[expense_cats["name"] == expense_category]["id"].iloc[0]
+                    else:
+                        expense_category = st.text_input("Expense Category")
+                        category_id = None
+                except:
+                    expense_category = st.text_input("Expense Category")
+                    category_id = None
+            
+            with col2:
+                payment_method = st.selectbox("Payment Method", ["Cash", "Bank Transfer", "Mobile Money", "Cheque"], key="expense_payment")
+                payee = st.text_input("Payee/Beneficiary")
+                approved_by = st.text_input("Approved By", "Admin")
+                description = st.text_area("Description", key="expense_desc")
+            
+            if st.form_submit_button("💳 Record Expense", type="primary"):
+                if not voucher_number:
+                    st.error("Voucher Number is required!")
+                else:
+                    cursor = conn.cursor()
+                    try:
+                        cursor.execute("""
+                            INSERT INTO expenses (date, voucher_number, amount, category_id, 
+                                                 description, payment_method, payee, approved_by)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (date, voucher_number, amount, category_id, description, 
+                              payment_method, payee, approved_by))
+                        conn.commit()
+                        st.success(f"Expense recorded! Voucher: {voucher_number}")
+                    except sqlite3.IntegrityError:
+                        st.error("Voucher number already exists.")
+                    except:
+                        try:
+                            cursor.execute("INSERT INTO expenses (date, amount, category_id) VALUES (?, ?, ?)",
+                                           (date, amount, category_id or 1))
+                            conn.commit()
+                            st.success("Expense recorded!")
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+                    
+                    conn.close()
+                    time.sleep(1)
+                    st.rerun()
+        
+        st.subheader("Expense Records")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            start_date = st.date_input("Start Date", datetime(datetime.today().year, 1, 1), key="expense_start")
+        with col2:
+            end_date = st.date_input("End Date", datetime.today(), key="expense_end")
+        
+        conn = get_db_connection()
+        
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(expenses)")
+        expense_columns = [col[1] for col in cursor.fetchall()]
+        
+        if 'voucher_number' in expense_columns:
+            query = """
+                SELECT e.date, e.voucher_number, e.amount, ec.name as category, e.payee, 
+                       e.payment_method, e.approved_by, e.description
+                FROM expenses e
+                LEFT JOIN expense_categories ec ON e.category_id = ec.id
+                WHERE e.date BETWEEN ? AND ?
+                ORDER BY e.date DESC
+            """
+        else:
+            query = """
+                SELECT e.date, e.amount, ec.name as category
+                FROM expenses e
+                LEFT JOIN expense_categories ec ON e.category_id = ec.id
+                WHERE e.date BETWEEN ? AND ?
+                ORDER BY e.date DESC
+            """
+        
+        expense_records = pd.read_sql_query(query, conn, params=(start_date, end_date))
+        
+        if not expense_records.empty:
+            st.dataframe(expense_records, width='stretch')
+            
+            total_expense = expense_records['amount'].sum()
+            st.info(f"**Total Expenses for period:** USh {total_expense:,.0f}")
+            
+            buf = BytesIO()
+            with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+                expense_records.to_excel(writer, sheet_name='Expense Records', index=False)
+            buf.seek(0)
+            st.download_button("Download Expense Report", buf, f"expense_report_{start_date}_{end_date}.xlsx",
+                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        else:
+            st.info("No expense records found for the selected period")
+        
+        conn.close()
     
-    # Categories and Reports tabs (unchanged from previous full versions)
-    # ... (add your existing code for these tabs if needed)
+    with tab_categories:
+        col1, col2 = st.columns(2)
+        
+        conn = get_db_connection()
+        
+        with col1:
+            st.subheader("All Categories")
+            try:
+                all_cats = pd.read_sql("SELECT name, category_type as type FROM expense_categories ORDER BY name", conn)
+                st.dataframe(all_cats, width='stretch')
+            except:
+                try:
+                    all_cats = pd.read_sql("SELECT name FROM expense_categories ORDER BY name", conn)
+                    st.dataframe(all_cats, width='stretch')
+                except:
+                    st.info("No categories yet")
+        
+        with col2:
+            st.subheader("Add New Category")
+            with st.form("add_category"):
+                new_cat = st.text_input("Category Name")
+                cat_type = st.selectbox("Category Type", ["Expense", "Income"])
+                
+                if st.form_submit_button("Add Category") and new_cat:
+                    cursor = conn.cursor()
+                    try:
+                        cursor.execute("INSERT INTO expense_categories (name, category_type) VALUES (?, ?)", (new_cat, cat_type))
+                        conn.commit()
+                        st.success(f"Category '{new_cat}' added as {cat_type}")
+                        st.rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("Category already exists")
+                    except:
+                        try:
+                            cursor.execute("INSERT INTO expense_categories (name) VALUES (?)", (new_cat,))
+                            conn.commit()
+                            st.success(f"Category '{new_cat}' added")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error adding category: {e}")
+        
+        conn.close()
+    
+    with tab_reports:
+        st.subheader("Financial Reports")
+        
+        report_type = st.selectbox("Select Report Type", [
+            "Income Summary",
+            "Expense Summary", 
+            "Payment Method Summary",
+            "Daily Transaction Report"
+        ])
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            start_date = st.date_input("Start Date", datetime(datetime.today().year, 1, 1), key="report_start")
+        with col2:
+            end_date = st.date_input("End Date", datetime.today(), key="report_end")
+        
+        conn = get_db_connection()
+        
+        if report_type == "Income Summary":
+            st.subheader("Income Summary")
+            try:
+                income_summary = pd.read_sql("""
+                    SELECT 
+                        source,
+                        COUNT(*) as transactions,
+                        SUM(amount) as total_amount,
+                        AVG(amount) as average_amount
+                    FROM incomes
+                    WHERE date BETWEEN ? AND ?
+                    GROUP BY source
+                    ORDER BY total_amount DESC
+                """, conn, params=(start_date, end_date))
+                if not income_summary.empty:
+                    st.dataframe(income_summary, width='stretch')
+                else:
+                    st.info("No income data")
+            except:
+                st.info("Error loading income summary")
+        
+        elif report_type == "Expense Summary":
+            st.subheader("Expense Summary")
+            try:
+                expense_summary = pd.read_sql("""
+                    SELECT 
+                        ec.name as category,
+                        COUNT(*) as transactions,
+                        SUM(e.amount) as total_amount,
+                        AVG(e.amount) as average_amount
+                    FROM expenses e
+                    LEFT JOIN expense_categories ec ON e.category_id = ec.id
+                    WHERE e.date BETWEEN ? AND ?
+                    GROUP BY ec.name
+                    ORDER BY total_amount DESC
+                """, conn, params=(start_date, end_date))
+                if not expense_summary.empty:
+                    st.dataframe(expense_summary, width='stretch')
+                else:
+                    st.info("No expense data")
+            except:
+                st.info("Error loading expense summary")
+        
+        elif report_type == "Payment Method Summary":
+            st.subheader("Payment Method Summary")
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(incomes)")
+            income_columns = [col[1] for col in cursor.fetchall()]
+            
+            if 'payment_method' in income_columns:
+                income_methods = pd.read_sql("""
+                    SELECT payment_method, COUNT(*) as transactions, SUM(amount) as total_amount
+                    FROM incomes WHERE date BETWEEN ? AND ?
+                    GROUP BY payment_method ORDER BY total_amount DESC
+                """, conn, params=(start_date, end_date))
+            else:
+                income_methods = pd.DataFrame()
+            
+            cursor.execute("PRAGMA table_info(expenses)")
+            expense_columns = [col[1] for col in cursor.fetchall()]
+            
+            if 'payment_method' in expense_columns:
+                expense_methods = pd.read_sql("""
+                    SELECT payment_method, COUNT(*) as transactions, SUM(amount) as total_amount
+                    FROM expenses WHERE date BETWEEN ? AND ?
+                    GROUP BY payment_method ORDER BY total_amount DESC
+                """, conn, params=(start_date, end_date))
+            else:
+                expense_methods = pd.DataFrame()
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write("**Income by Payment Method**")
+                if not income_methods.empty:
+                    st.dataframe(income_methods, width='stretch')
+                else:
+                    st.info("No income payment data")
+            
+            with col2:
+                st.write("**Expense by Payment Method**")
+                if not expense_methods.empty:
+                    st.dataframe(expense_methods, width='stretch')
+                else:
+                    st.info("No expense payment data")
+        
+        elif report_type == "Daily Transaction Report":
+            st.subheader("Daily Transaction Report")
+            try:
+                daily_report = pd.read_sql("""
+                    SELECT date, 'Income' as type, amount, source as description FROM incomes
+                    WHERE date BETWEEN ? AND ?
+                    UNION ALL
+                    SELECT date, 'Expense' as type, amount * -1 as amount, ec.name as description
+                    FROM expenses e LEFT JOIN expense_categories ec ON e.category_id = ec.id
+                    WHERE date BETWEEN ? AND ?
+                    ORDER BY date DESC
+                """, conn, params=(start_date, end_date, start_date, end_date))
+                if not daily_report.empty:
+                    st.dataframe(daily_report, width='stretch')
+                else:
+                    st.info("No transactions")
+            except:
+                st.info("Error loading daily report")
+        
+        conn.close()
 
 # ─── Financial Report ──────────────────────────────────────────────────
 elif page == "Financial Report":
@@ -1040,7 +1306,6 @@ elif page == "Fee Management":
                         ))
                         invoice_id = cursor.lastrowid
                         
-                        # Auto-create payment if paid_amount > 0
                         if paid_amount > 0:
                             receipt_number = generate_receipt_number()
                             cursor.execute("""
@@ -1049,7 +1314,6 @@ elif page == "Fee Management":
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                             """, (invoice_id, receipt_number, issue_date, paid_amount, "Cash", "Auto-generated", "Admin", "Initial payment on invoice generation"))
                             
-                            # Record as income
                             cursor.execute("""
                                 INSERT INTO incomes (date, receipt_number, amount, source, category_id, 
                                                     description, payment_method, payer, received_by)
