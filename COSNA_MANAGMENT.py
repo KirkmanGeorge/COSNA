@@ -61,18 +61,13 @@ def initialize_database():
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # expense_categories with category_type
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='expense_categories'")
     table_exists = cursor.fetchone()
     
     if table_exists:
         try:
             cursor.execute("SELECT category_type FROM expense_categories LIMIT 1")
-            category_type_exists = True
         except sqlite3.OperationalError:
-            category_type_exists = False
-        
-        if not category_type_exists:
             cursor.execute('''
                 CREATE TABLE expense_categories_new (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -198,6 +193,7 @@ def initialize_database():
     
     conn.commit()
 
+    # Seed uniform categories
     uniform_seeds = [
         ('Boys Main Shorts', 'boys', 0),
         ('Button Shirts Main', 'shared', 1),
@@ -215,99 +211,33 @@ def initialize_database():
             cursor.execute("INSERT INTO uniforms (category_id, stock, unit_price) VALUES (?, 0, 0.0)", (cat_id,))
             conn.commit()
 
+    # Seed income/expense categories
     expense_seeds = [
-        ('Medical', 'Expense'),
-        ('Salaries', 'Expense'),
-        ('Utilities', 'Expense'),
-        ('Maintenance', 'Expense'),
-        ('Supplies', 'Expense'),
-        ('Transport', 'Expense'),
-        ('Events', 'Expense'),
-        ('Tuition Fees', 'Income'),
-        ('Registration Fees', 'Income'),
-        ('Uniform Sales', 'Income'),
-        ('Donations', 'Income'),
-        ('Other Income', 'Income')
+        ('Medical', 'Expense'), ('Salaries', 'Expense'), ('Utilities', 'Expense'),
+        ('Maintenance', 'Expense'), ('Supplies', 'Expense'), ('Transport', 'Expense'),
+        ('Events', 'Expense'), ('Tuition Fees', 'Income'), ('Registration Fees', 'Income'),
+        ('Uniform Sales', 'Income'), ('Donations', 'Income'), ('Other Income', 'Income')
     ]
-    
     for cat, cat_type in expense_seeds:
         cursor.execute("SELECT id FROM expense_categories WHERE name = ?", (cat,))
         if not cursor.fetchone():
             try:
                 cursor.execute("INSERT INTO expense_categories (name, category_type) VALUES (?, ?)", (cat, cat_type))
-                conn.commit()
-            except sqlite3.IntegrityError:
+            except:
                 cursor.execute("INSERT INTO expense_categories (name) VALUES (?)", (cat,))
-                conn.commit()
-    
-    try:
-        cursor.execute("SELECT receipt_number FROM incomes LIMIT 1")
-    except sqlite3.OperationalError:
-        try:
-            cursor.execute("ALTER TABLE incomes ADD COLUMN receipt_number TEXT UNIQUE")
-        except:
-            pass
-        try:
-            cursor.execute("ALTER TABLE incomes ADD COLUMN category_id INTEGER")
-        except:
-            pass
-        try:
-            cursor.execute("ALTER TABLE incomes ADD COLUMN description TEXT")
-        except:
-            pass
-        try:
-            cursor.execute("ALTER TABLE incomes ADD COLUMN payment_method TEXT")
-        except:
-            pass
-        try:
-            cursor.execute("ALTER TABLE incomes ADD COLUMN payer TEXT")
-        except:
-            pass
-        try:
-            cursor.execute("ALTER TABLE incomes ADD COLUMN attachment_path TEXT")
-        except:
-            pass
-        try:
-            cursor.execute("ALTER TABLE incomes ADD COLUMN received_by TEXT")
-        except:
-            pass
-    
-    try:
-        cursor.execute("SELECT voucher_number FROM expenses LIMIT 1")
-    except sqlite3.OperationalError:
-        try:
-            cursor.execute("ALTER TABLE expenses ADD COLUMN voucher_number TEXT UNIQUE")
-        except:
-            pass
-        try:
-            cursor.execute("ALTER TABLE expenses ADD COLUMN description TEXT")
-        except:
-            pass
-        try:
-            cursor.execute("ALTER TABLE expenses ADD COLUMN payment_method TEXT")
-        except:
-            pass
-        try:
-            cursor.execute("ALTER TABLE expenses ADD COLUMN payee TEXT")
-        except:
-            pass
-        try:
-            cursor.execute("ALTER TABLE expenses ADD COLUMN attachment_path TEXT")
-        except:
-            pass
-        try:
-            cursor.execute("ALTER TABLE expenses ADD COLUMN approved_by TEXT")
-        except:
-            pass
-    
-    try:
-        cursor.execute("SELECT category_id FROM expenses LIMIT 1")
-    except sqlite3.OperationalError:
-        try:
-            cursor.execute("ALTER TABLE expenses ADD COLUMN category_id INTEGER")
-        except:
-            pass
-    
+            conn.commit()
+
+    # Add missing columns safely
+    for table, cols in [
+        ('incomes', ['receipt_number TEXT UNIQUE', 'category_id INTEGER', 'description TEXT', 'payment_method TEXT', 'payer TEXT', 'attachment_path TEXT', 'received_by TEXT']),
+        ('expenses', ['voucher_number TEXT UNIQUE', 'description TEXT', 'payment_method TEXT', 'payee TEXT', 'attachment_path TEXT', 'approved_by TEXT'])
+    ]:
+        for col_def in cols:
+            try:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
+
     conn.commit()
     conn.close()
 
@@ -591,17 +521,19 @@ elif page == "Students":
                                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                                     """, (payment_date, receipt_number, amount, "Tuition Fees", 
                                           8, payment_method, student_name, "Admin"))
+                                    conn.commit()
+                                    st.success("Payment recorded and added to income!")
                                 except:
                                     cursor.execute("""
                                         INSERT INTO incomes (date, amount, source)
                                         VALUES (?, ?, ?)
                                     """, (payment_date, amount, f"Tuition fee from {student_name}"))
+                                    conn.commit()
+                                    st.success("Payment recorded and added to income!")
                                 
-                                conn.commit()
-                                st.success("Payment recorded successfully!")
                                 st.rerun()
                 else:
-                    st.info("No invoices found for this student")
+                    st.info("No invoices found for this student yet")
             except:
                 st.info("Invoice system not yet initialized or no invoices")
         
@@ -858,7 +790,7 @@ elif page == "Finances":
             st.download_button("📥 Download Income Report", buf, f"income_report_{start_date}_{end_date}.xlsx", 
                              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         else:
-            st.info("No income records found")
+            st.info("No income records found for the selected period")
         
         conn.close()
     
@@ -915,7 +847,7 @@ elif page == "Finances":
                             conn.commit()
                             st.success("Expense recorded!")
                         except Exception as e:
-                            st.error(f"Error recording expense: {e}")
+                            st.error(f"Error: {e}")
                     
                     conn.close()
                     time.sleep(1)
@@ -965,7 +897,7 @@ elif page == "Finances":
             with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
                 expense_records.to_excel(writer, sheet_name='Expense Records', index=False)
             buf.seek(0)
-            st.download_button("📥 Download Expense Report", buf, f"expense_report_{start_date}_{end_date}.xlsx", 
+            st.download_button("📥 Download Expense Report", buf, f"expense_report_{start_date}_{end_date}.xlsx",
                              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         else:
             st.info("No expense records found for the selected period")
@@ -1410,40 +1342,42 @@ elif page == "Fee Management":
             end_date = st.date_input("End Date", datetime.today(), key="payment_end")
         
         try:
-            cursor = conn.cursor()
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='payments'")
-            if cursor.fetchone():
-                query = """
-                    SELECT p.payment_date, p.receipt_number, p.amount, p.payment_method, 
-                           p.reference_number, p.received_by, p.notes,
-                           i.invoice_number, s.name as student_name
-                    FROM payments p
-                    LEFT JOIN invoices i ON p.invoice_id = i.id
-                    LEFT JOIN students s ON i.student_id = s.id
-                    WHERE p.payment_date BETWEEN ? AND ?
-                    ORDER BY p.payment_date DESC
-                """
+            payment_records = pd.read_sql("""
+                SELECT 
+                    p.payment_date,
+                    p.receipt_number,
+                    p.amount,
+                    p.payment_method,
+                    p.reference_number,
+                    p.received_by,
+                    p.notes,
+                    i.invoice_number,
+                    s.name as student_name,
+                    i.total_amount as invoice_total,
+                    i.balance_amount as remaining_balance
+                FROM payments p
+                LEFT JOIN invoices i ON p.invoice_id = i.id
+                LEFT JOIN students s ON i.student_id = s.id
+                WHERE p.payment_date BETWEEN ? AND ?
+                ORDER BY p.payment_date DESC
+            """, conn, params=(start_date, end_date))
+            
+            if not payment_records.empty:
+                st.dataframe(payment_records, width='stretch')
                 
-                payment_records = pd.read_sql_query(query, conn, params=(start_date, end_date))
+                total_payments = payment_records['amount'].sum()
+                st.info(f"**Total Payments Recorded:** USh {total_payments:,.0f}")
                 
-                if not payment_records.empty:
-                    st.dataframe(payment_records, width='stretch')
-                    
-                    total_payments = payment_records['amount'].sum()
-                    st.info(f"**Total Payments:** USh {total_payments:,.0f}")
-                    
-                    buf = BytesIO()
-                    with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-                        payment_records.to_excel(writer, sheet_name='Payment Records', index=False)
-                    buf.seek(0)
-                    st.download_button("📥 Download Payment Report Excel", buf, f"payments_{start_date}_{end_date}.xlsx",
-                                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                else:
-                    st.info("No payment records found for the selected period")
+                buf = BytesIO()
+                with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+                    payment_records.to_excel(writer, sheet_name='Payment Records', index=False)
+                buf.seek(0)
+                st.download_button("📥 Download Payment Report Excel", buf, f"payments_{start_date}_{end_date}.xlsx",
+                                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             else:
-                st.info("Payment table not yet created")
+                st.info("No payment records found in the selected period")
         except Exception as e:
-            st.info(f"Error loading payments: {e}")
+            st.info(f"Error loading payment records: {e}")
         
         conn.close()
 
