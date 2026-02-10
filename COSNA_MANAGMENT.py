@@ -559,11 +559,8 @@ elif page == "Students":
 elif page == "Uniforms":
     st.header("Uniforms – Inventory & Sales")
     
-    # Initialize session state for uniform refresh
-    if 'uniform_data' not in st.session_state:
-        st.session_state.uniform_data = None
-    if 'uniform_refresh' not in st.session_state:
-        st.session_state.uniform_refresh = False
+    # SIMPLE SOLUTION: Don't use session state for inventory data, always query fresh from DB
+    # This ensures ALL tabs always show the latest data
     
     # Function to get fresh inventory data
     def get_fresh_inventory():
@@ -578,17 +575,8 @@ elif page == "Uniforms":
         conn.close()
         return df
     
-    # Load or refresh data
-    if st.session_state.uniform_data is None or st.session_state.uniform_refresh:
-        st.session_state.uniform_data = get_fresh_inventory()
-        st.session_state.uniform_refresh = False
-    
-    inventory_df = st.session_state.uniform_data
-    
-    # Function to refresh data
-    def refresh_uniform_data():
-        st.session_state.uniform_refresh = True
-        st.session_state.uniform_data = get_fresh_inventory()
+    # Get FRESH data every time this page loads
+    inventory_df = get_fresh_inventory()
     
     tab_view, tab_update, tab_sale = st.tabs(["View Inventory", "Update Stock/Price", "Record Sale"])
     
@@ -615,16 +603,11 @@ elif page == "Uniforms":
         buf.seek(0)
         st.download_button("📥 Download Inventory Excel", buf, "cosna_uniforms.xlsx",
                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        
-        # Refresh button
-        if st.button("🔄 Refresh Inventory", type="secondary"):
-            refresh_uniform_data()
-            st.rerun()
     
     with tab_update:
         st.subheader("Update Stock & Price")
         
-        # Get fresh categories for the dropdown
+        # Get FRESH categories for the dropdown
         conn = get_db_connection()
         categories_df = pd.read_sql("""
             SELECT uc.id, uc.category, u.stock, u.unit_price 
@@ -672,9 +655,8 @@ elif page == "Uniforms":
                         conn.commit()
                         conn.close()
                         
-                        refresh_uniform_data()
                         st.success(f"✅ Updated {selected_category}: {new_stock} items at USh {new_price:,.0f}")
-                        time.sleep(1)
+                        # Force immediate refresh by rerunning the entire app
                         st.rerun()
         else:
             st.info("No uniform categories found")
@@ -682,40 +664,40 @@ elif page == "Uniforms":
     with tab_sale:
         st.subheader("Record Uniform Sale")
         
-        # Get fresh data for the sale tab - IMPORTANT: Always get fresh stock data
+        # CRITICAL: Get FRESH data directly from database every time this tab is viewed
         conn = get_db_connection()
-        categories_df = pd.read_sql("""
+        sale_categories_df = pd.read_sql("""
             SELECT uc.id, uc.category, u.stock, u.unit_price 
             FROM uniform_categories uc 
             JOIN uniforms u ON uc.id = u.category_id 
+            WHERE u.stock > 0 
             ORDER BY uc.category
         """, conn)
         conn.close()
         
-        if not categories_df.empty:
-            # Create a dropdown with stock information
-            category_options = []
-            for idx, row in categories_df.iterrows():
-                if row['stock'] > 0:
-                    category_options.append(f"{row['category']} (Stock: {row['stock']}, Price: USh {row['unit_price']:,.0f})")
-                else:
-                    category_options.append(f"{row['category']} (Out of Stock)")
+        if not sale_categories_df.empty:
+            # Simple dropdown - just show categories with available stock
+            selected_category = st.selectbox("Select Category to Sell", 
+                                           sale_categories_df["category"],
+                                           key="sale_category_select")
             
-            selected_option = st.selectbox("Select Category to Sell", 
-                                         category_options,
-                                         key="sale_category_select")
-            
-            if selected_option:
-                # Extract category name from the selected option
-                category_name = selected_option.split(" (")[0]
-                cat_data = categories_df[categories_df["category"] == category_name].iloc[0]
-                cat_id = cat_data["id"]
-                available_stock = cat_data["stock"]
-                unit_price = cat_data["unit_price"]
+            if selected_category:
+                # Get the MOST CURRENT data for this specific category
+                conn = get_db_connection()
+                current_stock_data = conn.execute("""
+                    SELECT u.stock, u.unit_price 
+                    FROM uniforms u 
+                    JOIN uniform_categories uc ON u.category_id = uc.id
+                    WHERE uc.category = ?
+                """, (selected_category,)).fetchone()
+                conn.close()
                 
-                if available_stock > 0:
-                    st.info(f"**Available Stock:** {available_stock} items")
-                    st.info(f"**Unit Price:** USh {unit_price:,.0f}")
+                if current_stock_data:
+                    available_stock = current_stock_data[0]
+                    unit_price = current_stock_data[1]
+                    
+                    st.success(f"✅ **Available Stock:** {available_stock} items")
+                    st.info(f"💰 **Unit Price:** USh {unit_price:,.0f}")
                     
                     with st.form("record_sale_form"):
                         col1, col2 = st.columns(2)
@@ -725,57 +707,67 @@ elif page == "Uniforms":
                                                       min_value=1, 
                                                       max_value=int(available_stock),
                                                       value=1,
-                                                      step=1)
-                            sale_date = st.date_input("Sale Date", datetime.today())
+                                                      step=1,
+                                                      key="sale_quantity")
+                            sale_date = st.date_input("Sale Date", datetime.today(), key="sale_date")
                         
                         with col2:
-                            customer_name = st.text_input("Customer Name", "Walk-in Customer")
+                            customer_name = st.text_input("Customer Name", "Walk-in Customer", key="customer_name")
                             payment_method = st.selectbox("Payment Method", 
                                                          ["Cash", "Bank Transfer", "Mobile Money", "Cheque"],
-                                                         index=0)
+                                                         index=0,
+                                                         key="sale_payment_method")
                         
                         total_amount = quantity * unit_price
-                        st.warning(f"**Total Amount:** USh {total_amount:,.0f}")
+                        st.warning(f"**Total Sale Amount:** USh {total_amount:,.0f}")
                         
-                        if st.form_submit_button("💰 Record Sale", type="primary"):
+                        if st.form_submit_button("💰 RECORD SALE NOW", type="primary"):
                             if quantity > available_stock:
-                                st.error(f"❌ Cannot sell {quantity} items. Only {available_stock} available!")
+                                st.error(f"❌ ERROR: Cannot sell {quantity} items. Only {available_stock} available!")
                             else:
                                 conn = get_db_connection()
                                 cursor = conn.cursor()
                                 
-                                # Update stock
+                                # Update stock in database
                                 cursor.execute("""
                                     UPDATE uniforms 
                                     SET stock = stock - ? 
-                                    WHERE category_id = ?
-                                """, (quantity, cat_id))
+                                    WHERE category_id = (
+                                        SELECT id FROM uniform_categories WHERE category = ?
+                                    )
+                                """, (quantity, selected_category))
                                 
-                                # Record income
+                                # Record income in database
+                                receipt_num = generate_receipt_number()
                                 try:
                                     cursor.execute("""
-                                        INSERT INTO incomes (date, receipt_number, amount, source, category_id, description, payment_method, payer, received_by) 
+                                        INSERT INTO incomes (date, receipt_number, amount, source, category_id, 
+                                                           description, payment_method, payer, received_by) 
                                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                    """, (sale_date, generate_receipt_number(), total_amount, "Uniform Sales", 10, 
-                                          f"Sale of {quantity} {category_name}", "Cash", customer_name, "Admin"))
-                                except:
+                                    """, (sale_date, receipt_num, total_amount, "Uniform Sales", 10, 
+                                          f"Sale of {quantity} {selected_category}", payment_method, customer_name, "Admin"))
+                                except Exception as e:
+                                    # Fallback if detailed insert fails
                                     cursor.execute("""
                                         INSERT INTO incomes (date, amount, source) 
                                         VALUES (?, ?, ?)
-                                    """, (sale_date, total_amount, f"Uniform sale: {quantity} {category_name}"))
+                                    """, (sale_date, total_amount, f"Uniform sale: {quantity} {selected_category}"))
                                 
                                 conn.commit()
                                 conn.close()
                                 
-                                refresh_uniform_data()
-                                st.success(f"✅ Sale recorded: {quantity} {category_name} for USh {total_amount:,.0f}")
+                                st.success(f"🎉 SALE RECORDED SUCCESSFULLY!")
+                                st.success(f"✅ Sold {quantity} {selected_category} for USh {total_amount:,.0f}")
+                                st.success(f"📋 Receipt Number: {receipt_num}")
                                 st.balloons()
-                                time.sleep(2)
+                                
+                                # Force immediate refresh of the entire page
+                                time.sleep(1)
                                 st.rerun()
                 else:
-                    st.warning(f"⚠️ {category_name} is out of stock. Please update stock first.")
+                    st.error("❌ Could not find stock data for selected category")
         else:
-            st.warning("No uniform items found in the database.")
+            st.warning("⚠️ No uniform items in stock available for sale. Please update stock levels first.")
 
 # ─── Finances ──────────────────────────────────────────────────────────
 elif page == "Finances":
