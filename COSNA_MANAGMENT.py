@@ -12,7 +12,6 @@ import string
 import difflib
 import hashlib
 import os
-import traceback
 
 # ---------------------------
 # App configuration
@@ -21,7 +20,7 @@ APP_TITLE = "COSNA School Management System"
 DB_PATH = "cosna_school.db"
 REGISTRATION_FEE = 50000.0
 SIMILARITY_THRESHOLD = 0.82  # fuzzy match threshold for near-duplicates
-LOGO_FILENAMES = ["school_badge.png", "badge.png", "logo.png"]  # place your badge file in app folder with one of these names
+LOGO_FILENAME = "school_badge.png"  # saved logo filename in app folder
 
 st.set_page_config(page_title=APP_TITLE, layout="wide", initial_sidebar_state="expanded")
 st.title(APP_TITLE)
@@ -84,9 +83,6 @@ def table_has_column(conn, table_name, column_name):
     return column_name in cols
 
 def safe_alter_add_column(conn, table, column_def):
-    """
-    Add column if not exists. column_def is like 'normalized_category TEXT'.
-    """
     col_name = column_def.split()[0]
     try:
         if not table_has_column(conn, table, col_name):
@@ -104,7 +100,6 @@ def initialize_database():
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Create core tables (idempotent)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,12 +119,7 @@ def initialize_database():
         )
     ''')
 
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS classes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE
-        )
-    ''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS classes (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
 
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS students (
@@ -273,7 +263,7 @@ def initialize_database():
 
     conn.commit()
 
-    # Ensure columns referenced by code exist (migrations)
+    # safe migrations
     safe_alter_add_column(conn, "incomes", "created_by TEXT")
     safe_alter_add_column(conn, "incomes", "received_by TEXT")
     safe_alter_add_column(conn, "incomes", "description TEXT")
@@ -287,7 +277,7 @@ def initialize_database():
     safe_alter_add_column(conn, "invoices", "created_by TEXT")
     safe_alter_add_column(conn, "payments", "created_by TEXT")
 
-    # Backfill normalized_category if empty
+    # backfill normalized fields and ensure uniforms rows
     try:
         rows = conn.execute("SELECT id, category, normalized_category FROM uniform_categories").fetchall()
         for r in rows:
@@ -297,7 +287,6 @@ def initialize_database():
     except Exception:
         pass
 
-    # Backfill normalized_name for students
     try:
         rows = conn.execute("SELECT id, name, normalized_name FROM students").fetchall()
         for r in rows:
@@ -307,7 +296,6 @@ def initialize_database():
     except Exception:
         pass
 
-    # Ensure every uniform category has a uniforms row
     try:
         rows = conn.execute("SELECT id FROM uniform_categories").fetchall()
         for r in rows:
@@ -319,7 +307,7 @@ def initialize_database():
     except Exception:
         pass
 
-    # Seed default admin user if none exists
+    # seed admin user
     try:
         cur = conn.execute("SELECT COUNT(*) as cnt FROM users")
         if cur.fetchone()["cnt"] == 0:
@@ -331,7 +319,7 @@ def initialize_database():
     except Exception:
         pass
 
-    # Seed uniform categories and uniforms if missing
+    # seed uniform categories and expense categories
     uniform_seeds = [
         ('Boys Main Shorts', 'boys', 0),
         ('Button Shirts Main', 'shared', 1),
@@ -360,7 +348,6 @@ def initialize_database():
     except Exception:
         pass
 
-    # Seed expense categories if missing
     expense_seeds = [
         ('Medical', 'Expense'), ('Salaries', 'Expense'), ('Utilities', 'Expense'),
         ('Maintenance', 'Expense'), ('Supplies', 'Expense'), ('Transport', 'Expense'),
@@ -377,11 +364,10 @@ def initialize_database():
 
     conn.close()
 
-# Run initialization (safe)
 initialize_database()
 
 # ---------------------------
-# Authentication UI & helpers
+# Authentication & session
 # ---------------------------
 def get_user(username):
     conn = get_db_connection()
@@ -401,81 +387,87 @@ def log_action(action, details="", performed_by="system"):
     except Exception:
         pass
 
-# Ensure session user structure exists and is safe to access
 if 'user' not in st.session_state:
     st.session_state.user = None
 
-def login_ui():
-    st.subheader("Login")
-    col1, col2 = st.columns([2,1])
+# ---------------------------
+# Logo upload on login page
+# ---------------------------
+def save_uploaded_logo(uploaded_file):
+    try:
+        with open(LOGO_FILENAME, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        return True
+    except Exception:
+        return False
+
+def logo_exists():
+    return os.path.exists(LOGO_FILENAME)
+
+# ---------------------------
+# Login page (isolated)
+# ---------------------------
+def show_login_page():
+    st.markdown("### Please log in to continue")
+    col1, col2 = st.columns([1,2])
     with col1:
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
+        if logo_exists():
+            try:
+                st.image(LOGO_FILENAME, width=160)
+            except Exception:
+                pass
+        else:
+            st.info("Upload school badge (optional) to display on login and reports")
     with col2:
-        if st.button("Login"):
-            if not username or not password:
-                st.error("Enter username and password")
-                return False
-            user = get_user(username)
-            if user and verify_password(user["password_hash"], password):
-                # store a safe dict with expected keys
-                st.session_state.user = {
-                    "id": user["id"],
-                    "username": user["username"],
-                    "role": user["role"] if user["role"] is not None else "Staff",
-                    "full_name": user["full_name"] if user["full_name"] is not None else user["username"]
-                }
-                st.success(f"Welcome back, {st.session_state.user['full_name']}!")
-                log_action("login", f"user {username} logged in", username)
-                st.rerun()
-            else:
-                st.error("Invalid credentials")
-                return False
-    return True
+        with st.form("login_form"):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            uploaded_logo = st.file_uploader("Upload School Badge (PNG/JPG) — optional", type=["png","jpg","jpeg"])
+            submit = st.form_submit_button("Login")
+            if submit:
+                if uploaded_logo is not None:
+                    save_uploaded_logo(uploaded_logo)
+                if not username or not password:
+                    st.error("Enter username and password")
+                else:
+                    user = get_user(username)
+                    if user and verify_password(user["password_hash"], password):
+                        st.session_state.user = {
+                            "id": user["id"],
+                            "username": user["username"],
+                            "role": user["role"] if user["role"] is not None else "Staff",
+                            "full_name": user["full_name"] if user["full_name"] is not None else user["username"]
+                        }
+                        log_action("login", f"user {username} logged in", username)
+                        st.experimental_rerun()
+                    else:
+                        st.error("Invalid credentials")
 
-def logout():
-    # safe logout button that won't error if user is None
-    if st.sidebar.button("Logout"):
-        if st.session_state.user:
-            uname = st.session_state.user.get('username', 'unknown')
-            log_action("logout", f"user {uname} logged out", uname)
-        st.session_state.user = None
-        st.rerun()
-
-# If not logged in, show login and stop
+# If not logged in, show only login page and stop further rendering
 if not st.session_state.user:
-    if not login_ui():
-        st.stop()
+    show_login_page()
+    st.stop()
 
 # ---------------------------
-# Logo handling
+# Sidebar (only after login)
 # ---------------------------
-def find_logo_path():
-    for fname in LOGO_FILENAMES:
-        if os.path.exists(fname):
-            return fname
-    return None
-
-LOGO_PATH = find_logo_path()
-
-# Sidebar user info, logo, and logout (guarded access)
 with st.sidebar:
-    if LOGO_PATH:
+    if logo_exists():
         try:
-            st.image(LOGO_PATH, width=140)
+            st.image(LOGO_FILENAME, width=140)
         except Exception:
             pass
-    # safe access to user info
-    user_safe = st.session_state.get('user')
-    if user_safe:
-        st.markdown(f"**User:** {user_safe.get('full_name') or user_safe.get('username')}")
-        st.markdown(f"**Role:** {user_safe.get('role') or 'Staff'}")
-    else:
-        st.markdown("**User:** Not logged in")
-    logout()
+    user_safe = st.session_state.get('user') or {}
+    st.markdown(f"**User:** {user_safe.get('full_name') or user_safe.get('username')}")
+    st.markdown(f"**Role:** {user_safe.get('role') or 'Staff'}")
+    if st.button("Logout"):
+        uname = user_safe.get('username', 'unknown')
+        log_action("logout", f"user {uname} logged out", uname)
+        st.session_state.user = None
+        st.experimental_rerun()
 
 # ---------------------------
-# Export helpers (Excel & PDF) with logo
+# Export helpers (Excel & PDF with logo)
 # ---------------------------
 def df_to_excel_bytes(df: pd.DataFrame, sheet_name="Sheet1"):
     buf = BytesIO()
@@ -489,8 +481,8 @@ def dataframe_to_pdf_bytes(df: pd.DataFrame, title="Report", logo_path=None):
     c = canvas.Canvas(buf, pagesize=letter)
     width, height = letter
 
-    # Draw logo if available
     y_top = height - 40
+    title_x = 40
     if logo_path and os.path.exists(logo_path):
         try:
             img = ImageReader(logo_path)
@@ -503,8 +495,6 @@ def dataframe_to_pdf_bytes(df: pd.DataFrame, title="Report", logo_path=None):
             title_x = 40 + draw_w + 10
         except Exception:
             title_x = 40
-    else:
-        title_x = 40
 
     c.setFont("Helvetica-Bold", 14)
     c.drawString(title_x, y_top, title)
@@ -513,11 +503,9 @@ def dataframe_to_pdf_bytes(df: pd.DataFrame, title="Report", logo_path=None):
 
     cols = list(df.columns)
     col_width = max(60, (width - 80) / max(1, len(cols)))
-    # Header
     for i, col in enumerate(cols):
         c.drawString(40 + i * col_width, y, str(col))
     y -= 14
-    # Rows
     for _, row in df.iterrows():
         if y < 40:
             c.showPage()
@@ -540,11 +528,11 @@ def download_options(df: pd.DataFrame, filename_base="report", title="Report"):
         excel_buf = df_to_excel_bytes(df)
         st.download_button("Download Excel", excel_buf, f"{filename_base}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     with col2:
-        pdf_buf = dataframe_to_pdf_bytes(df, title=title, logo_path=LOGO_PATH)
+        pdf_buf = dataframe_to_pdf_bytes(df, title=title, logo_path=LOGO_FILENAME if logo_exists() else None)
         st.download_button("Download PDF", pdf_buf, f"{filename_base}.pdf", "application/pdf")
 
 # ---------------------------
-# Main navigation
+# Navigation
 # ---------------------------
 page = st.sidebar.radio("Menu", ["Dashboard", "Students", "Uniforms", "Finances", "Financial Report", "Fee Management"])
 
@@ -635,7 +623,6 @@ elif page == "Students":
     st.header("Students")
     tab_view, tab_add, tab_fees = st.tabs(["View & Export", "Add Student", "Student Fees"])
 
-    # View & Export
     with tab_view:
         conn = get_db_connection()
         try:
@@ -674,7 +661,6 @@ elif page == "Students":
             st.info("No student records yet or error loading data")
         conn.close()
 
-    # Add Student with duplicate detection
     with tab_add:
         st.subheader("Add Student")
         conn = get_db_connection()
@@ -734,7 +720,6 @@ elif page == "Students":
                         st.error(f"Error adding student: {e}")
         conn.close()
 
-    # Student Fees
     with tab_fees:
         st.subheader("Student Fee Management")
         conn = get_db_connection()
@@ -752,7 +737,7 @@ elif page == "Students":
                 st.info("No invoices for this student")
             else:
                 st.dataframe(invoices[['invoice_number','issue_date','due_date','total_amount','paid_amount','balance_amount','status']], width='stretch')
-                # Show payment history for selected student
+
                 st.subheader("Payment History")
                 try:
                     payments = pd.read_sql("SELECT p.payment_date, p.amount, p.payment_method, p.receipt_number, p.reference_number, p.notes FROM payments p JOIN invoices i ON p.invoice_id = i.id WHERE i.student_id = ? ORDER BY p.payment_date DESC", conn, params=(student_id,))
@@ -764,7 +749,6 @@ elif page == "Students":
                 except Exception:
                     st.info("No payments or error loading payments")
 
-                # Allow paying an outstanding invoice here as requested
                 st.subheader("Pay Outstanding Invoice")
                 outstanding_invoices = invoices[invoices['status'].isin(['Pending','Partially Paid'])]
                 if outstanding_invoices.empty:
@@ -791,17 +775,14 @@ elif page == "Students":
                         else:
                             try:
                                 cur = conn.cursor()
-                                # Update invoice
                                 new_paid = (inv_row['paid_amount'] or 0) + pay_amount
                                 new_balance = (inv_row['balance_amount'] if inv_row['balance_amount'] is not None else inv_row['total_amount']) - pay_amount
                                 new_status = 'Fully Paid' if new_balance <= 0 else 'Partially Paid'
                                 cur.execute("UPDATE invoices SET paid_amount = ?, balance_amount = ?, status = ? WHERE id = ?", (new_paid, new_balance, new_status, inv_id))
-                                # Insert payment record
                                 cur.execute("""
                                     INSERT INTO payments (invoice_id, receipt_number, payment_date, amount, payment_method, reference_number, received_by, notes, created_by)
                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 """, (inv_id, pay_receipt, pay_date.isoformat(), pay_amount, pay_method, pay_ref, st.session_state.user['username'], pay_notes, st.session_state.user['username']))
-                                # Insert income record
                                 try:
                                     cur.execute("""
                                         INSERT INTO incomes (date, receipt_number, amount, source, category_id, payment_method, payer, received_by, created_by)
@@ -815,7 +796,7 @@ elif page == "Students":
                                 conn.commit()
                                 st.success("Payment recorded and invoice updated")
                                 log_action("pay_invoice", f"Payment {pay_amount} for invoice {chosen_inv}", st.session_state.user['username'])
-                                st.rerun()
+                                st.experimental_rerun()
                             except Exception as e:
                                 st.error(f"Error recording payment: {e}")
         conn.close()
@@ -838,7 +819,6 @@ elif page == "Uniforms":
 
     tab_view, tab_update, tab_sale, tab_manage = st.tabs(["View Inventory", "Update Stock/Price", "Record Sale", "Manage Categories"])
 
-    # View Inventory
     with tab_view:
         inventory_df = get_inventory_df()
         if inventory_df.empty:
@@ -854,7 +834,6 @@ elif page == "Uniforms":
             col2.metric("Total Inventory Value", f"USh {total_value:,.0f}")
             download_options(inventory_df, filename_base="uniform_inventory", title="Uniform Inventory Report")
 
-    # Update Stock & Price
     with tab_update:
         st.subheader("Update Stock & Price")
         conn = get_db_connection()
@@ -884,7 +863,7 @@ elif page == "Uniforms":
                     cur.execute("COMMIT")
                     st.success("Inventory updated")
                     log_action("update_uniform", f"Updated category {selected_category}: stock={final_stock}, price={new_price}", st.session_state.user['username'])
-                    st.rerun()
+                    st.experimental_rerun()
                 except Exception as e:
                     try:
                         cur.execute("ROLLBACK")
@@ -893,7 +872,6 @@ elif page == "Uniforms":
                     st.error(f"Error updating inventory: {e}")
         conn.close()
 
-    # Record Sale
     with tab_sale:
         st.subheader("Record Uniform Sale")
         conn = get_db_connection()
@@ -947,7 +925,7 @@ elif page == "Uniforms":
                             cur.execute("COMMIT")
                             st.success(f"Sale recorded. New stock: {new_stock}")
                             log_action("uniform_sale", f"Sold {qty} of {selected} for USh {amount}", st.session_state.user['username'])
-                            st.rerun()
+                            st.experimental_rerun()
                     except Exception as e:
                         try:
                             cur.execute("ROLLBACK")
@@ -956,7 +934,6 @@ elif page == "Uniforms":
                         st.error(f"Error recording sale: {e}")
         conn.close()
 
-    # Manage categories
     with tab_manage:
         st.subheader("Manage Uniform Categories")
         conn = get_db_connection()
@@ -990,7 +967,7 @@ elif page == "Uniforms":
                         conn.commit()
                         st.success("Uniform category added")
                         log_action("add_uniform_category", f"Added {cat_name} stock={initial_stock} price={unit_price}", st.session_state.user['username'])
-                        st.rerun()
+                        st.experimental_rerun()
                     except Exception as e:
                         st.error(f"Error adding category: {e}")
         conn.close()
@@ -1002,7 +979,6 @@ elif page == "Finances":
     st.header("Finances")
     tab_inc, tab_exp, tab_reports = st.tabs(["Record Income", "Record Expense", "View Transactions"])
 
-    # Record Income
     with tab_inc:
         st.subheader("Record Income")
         conn = get_db_connection()
@@ -1044,7 +1020,6 @@ elif page == "Finances":
                     st.error(f"Error recording income: {e}")
         conn.close()
 
-    # Record Expense
     with tab_exp:
         st.subheader("Record Expense")
         conn = get_db_connection()
@@ -1086,7 +1061,6 @@ elif page == "Finances":
                     st.error(f"Error recording expense: {e}")
         conn.close()
 
-    # View Transactions
     with tab_reports:
         st.subheader("Transactions")
         conn = get_db_connection()
@@ -1119,7 +1093,7 @@ elif page == "Finances":
         conn.close()
 
 # ---------------------------
-# Financial Report (custom filters & export)
+# Financial Report
 # ---------------------------
 elif page == "Financial Report":
     st.header("Financial Reports & Exports")
@@ -1164,14 +1138,13 @@ elif page == "Financial Report":
                     else:
                         st.dataframe(df, width='stretch')
                         download_options(df, filename_base="outstanding_invoices", title="Outstanding Invoices")
-                else:  # Student Payment Summary
+                else:
                     students = pd.read_sql("SELECT id, name FROM students ORDER BY name", conn)
                     if students.empty:
                         st.info("No students available")
                     else:
                         sel = st.selectbox("Select Student", students.apply(lambda x: f"{x['name']} (ID: {x['id']})", axis=1))
                         sid = int(sel.split("(ID: ")[1].replace(")", ""))
-                        # Summarize invoices and payments per term/academic year
                         df_inv = pd.read_sql("SELECT invoice_number, academic_year, term, total_amount, paid_amount, balance_amount, status, issue_date FROM invoices WHERE student_id = ? ORDER BY issue_date DESC", conn, params=(sid,))
                         df_pay = pd.read_sql("SELECT payment_date, amount, payment_method, receipt_number, reference_number FROM payments p JOIN invoices i ON p.invoice_id = i.id WHERE i.student_id = ? ORDER BY payment_date DESC", conn, params=(sid,))
                         st.subheader("Invoices")
@@ -1191,7 +1164,7 @@ elif page == "Financial Report":
     conn.close()
 
 # ---------------------------
-# Fee Management (detailed)
+# Fee Management
 # ---------------------------
 elif page == "Fee Management":
     st.header("Fee Management")
@@ -1237,7 +1210,6 @@ elif page == "Fee Management":
             except Exception as e:
                 st.error(f"Error saving fee structure: {e}")
 
-    # Generate invoice for a student
     st.subheader("Generate Invoice")
     students = pd.read_sql("SELECT s.id, s.name, c.name as class_name FROM students s LEFT JOIN classes c ON s.class_id = c.id ORDER BY s.name", conn)
     if students.empty:
