@@ -12,6 +12,7 @@ import string
 import difflib
 import hashlib
 import os
+import traceback
 
 # ---------------------------
 # App configuration
@@ -20,7 +21,7 @@ APP_TITLE = "COSNA School Management System"
 DB_PATH = "cosna_school.db"
 REGISTRATION_FEE = 50000.0
 SIMILARITY_THRESHOLD = 0.82  # fuzzy match threshold for near-duplicates
-LOGO_FILENAME = "school_badge.png"  # saved logo filename in app folder
+LOGO_FILENAME = "school_badge.png"  # saved logo filename in app folder (optional upload)
 
 st.set_page_config(page_title=APP_TITLE, layout="wide", initial_sidebar_state="expanded")
 st.title(APP_TITLE)
@@ -391,7 +392,7 @@ if 'user' not in st.session_state:
     st.session_state.user = None
 
 # ---------------------------
-# Logo upload on login page
+# Logo upload & handling
 # ---------------------------
 def save_uploaded_logo(uploaded_file):
     try:
@@ -439,7 +440,7 @@ def show_login_page():
                             "full_name": user["full_name"] if user["full_name"] is not None else user["username"]
                         }
                         log_action("login", f"user {username} logged in", username)
-                        st.experimental_rerun()
+                        st.rerun()
                     else:
                         st.error("Invalid credentials")
 
@@ -464,7 +465,7 @@ with st.sidebar:
         uname = user_safe.get('username', 'unknown')
         log_action("logout", f"user {uname} logged out", uname)
         st.session_state.user = None
-        st.experimental_rerun()
+        st.rerun()
 
 # ---------------------------
 # Export helpers (Excel & PDF with logo)
@@ -532,7 +533,7 @@ def download_options(df: pd.DataFrame, filename_base="report", title="Report"):
         st.download_button("Download PDF", pdf_buf, f"{filename_base}.pdf", "application/pdf")
 
 # ---------------------------
-# Navigation
+# Main navigation
 # ---------------------------
 page = st.sidebar.radio("Menu", ["Dashboard", "Students", "Uniforms", "Finances", "Financial Report", "Fee Management"])
 
@@ -623,6 +624,7 @@ elif page == "Students":
     st.header("Students")
     tab_view, tab_add, tab_fees = st.tabs(["View & Export", "Add Student", "Student Fees"])
 
+    # View & Export
     with tab_view:
         conn = get_db_connection()
         try:
@@ -661,6 +663,7 @@ elif page == "Students":
             st.info("No student records yet or error loading data")
         conn.close()
 
+    # Add Student with duplicate detection
     with tab_add:
         st.subheader("Add Student")
         conn = get_db_connection()
@@ -720,6 +723,7 @@ elif page == "Students":
                         st.error(f"Error adding student: {e}")
         conn.close()
 
+    # Student Fees
     with tab_fees:
         st.subheader("Student Fee Management")
         conn = get_db_connection()
@@ -796,7 +800,7 @@ elif page == "Students":
                                 conn.commit()
                                 st.success("Payment recorded and invoice updated")
                                 log_action("pay_invoice", f"Payment {pay_amount} for invoice {chosen_inv}", st.session_state.user['username'])
-                                st.experimental_rerun()
+                                st.rerun()
                             except Exception as e:
                                 st.error(f"Error recording payment: {e}")
         conn.close()
@@ -819,6 +823,7 @@ elif page == "Uniforms":
 
     tab_view, tab_update, tab_sale, tab_manage = st.tabs(["View Inventory", "Update Stock/Price", "Record Sale", "Manage Categories"])
 
+    # View Inventory
     with tab_view:
         inventory_df = get_inventory_df()
         if inventory_df.empty:
@@ -834,6 +839,7 @@ elif page == "Uniforms":
             col2.metric("Total Inventory Value", f"USh {total_value:,.0f}")
             download_options(inventory_df, filename_base="uniform_inventory", title="Uniform Inventory Report")
 
+    # Update Stock & Price
     with tab_update:
         st.subheader("Update Stock & Price")
         conn = get_db_connection()
@@ -863,7 +869,7 @@ elif page == "Uniforms":
                     cur.execute("COMMIT")
                     st.success("Inventory updated")
                     log_action("update_uniform", f"Updated category {selected_category}: stock={final_stock}, price={new_price}", st.session_state.user['username'])
-                    st.experimental_rerun()
+                    st.rerun()
                 except Exception as e:
                     try:
                         cur.execute("ROLLBACK")
@@ -872,6 +878,7 @@ elif page == "Uniforms":
                     st.error(f"Error updating inventory: {e}")
         conn.close()
 
+    # Record Sale
     with tab_sale:
         st.subheader("Record Uniform Sale")
         conn = get_db_connection()
@@ -925,7 +932,7 @@ elif page == "Uniforms":
                             cur.execute("COMMIT")
                             st.success(f"Sale recorded. New stock: {new_stock}")
                             log_action("uniform_sale", f"Sold {qty} of {selected} for USh {amount}", st.session_state.user['username'])
-                            st.experimental_rerun()
+                            st.rerun()
                     except Exception as e:
                         try:
                             cur.execute("ROLLBACK")
@@ -934,6 +941,7 @@ elif page == "Uniforms":
                         st.error(f"Error recording sale: {e}")
         conn.close()
 
+    # Manage categories
     with tab_manage:
         st.subheader("Manage Uniform Categories")
         conn = get_db_connection()
@@ -967,7 +975,7 @@ elif page == "Uniforms":
                         conn.commit()
                         st.success("Uniform category added")
                         log_action("add_uniform_category", f"Added {cat_name} stock={initial_stock} price={unit_price}", st.session_state.user['username'])
-                        st.experimental_rerun()
+                        st.rerun()
                     except Exception as e:
                         st.error(f"Error adding category: {e}")
         conn.close()
@@ -979,6 +987,7 @@ elif page == "Finances":
     st.header("Finances")
     tab_inc, tab_exp, tab_reports = st.tabs(["Record Income", "Record Expense", "View Transactions"])
 
+    # Record Income
     with tab_inc:
         st.subheader("Record Income")
         conn = get_db_connection()
@@ -1020,6 +1029,7 @@ elif page == "Finances":
                     st.error(f"Error recording income: {e}")
         conn.close()
 
+    # Record Expense
     with tab_exp:
         st.subheader("Record Expense")
         conn = get_db_connection()
@@ -1061,6 +1071,7 @@ elif page == "Finances":
                     st.error(f"Error recording expense: {e}")
         conn.close()
 
+    # View Transactions
     with tab_reports:
         st.subheader("Transactions")
         conn = get_db_connection()
