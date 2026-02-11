@@ -1,3 +1,4 @@
+# cosna_school_app.py
 import streamlit as st
 import sqlite3
 import pandas as pd
@@ -5,29 +6,26 @@ from datetime import datetime, date
 from io import BytesIO
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
-import time
 import random
 import string
 import difflib
 import hashlib
 import os
-import math
-import tempfile
 
 # ---------------------------
-# Configuration & Utilities
+# App configuration
 # ---------------------------
 APP_TITLE = "COSNA School Management System"
 DB_PATH = "cosna_school.db"
 REGISTRATION_FEE = 50000.0
 SIMILARITY_THRESHOLD = 0.82  # fuzzy match threshold for near-duplicates
 
-st.set_page_config(page_title="COSNA School Management", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title=APP_TITLE, layout="wide", initial_sidebar_state="expanded")
 st.title(APP_TITLE)
 st.markdown("Students • Uniforms • Finances • Reports")
 
 # ---------------------------
-# Database helpers
+# Utilities
 # ---------------------------
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -74,13 +72,19 @@ def generate_invoice_number(): return generate_code("INV")
 def generate_voucher_number(): return generate_code("VCH")
 
 # ---------------------------
-# Initialize database & migrations
+# Database initialization & migrations
 # ---------------------------
+def table_has_column(conn, table_name, column_name):
+    cur = conn.cursor()
+    cur.execute(f"PRAGMA table_info({table_name})")
+    cols = [r[1] for r in cur.fetchall()]
+    return column_name in cols
+
 def initialize_database():
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Users table for authentication and roles
+    # Create core tables if missing
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -92,7 +96,6 @@ def initialize_database():
         )
     ''')
 
-    # Expense categories
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS expense_categories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -101,7 +104,6 @@ def initialize_database():
         )
     ''')
 
-    # Classes
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS classes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,7 +111,6 @@ def initialize_database():
         )
     ''')
 
-    # Students
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS students (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -125,7 +126,6 @@ def initialize_database():
         )
     ''')
 
-    # Uniform categories and inventory
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS uniform_categories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -135,6 +135,7 @@ def initialize_database():
             is_shared INTEGER DEFAULT 0
         )
     ''')
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS uniforms (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -146,7 +147,6 @@ def initialize_database():
         )
     ''')
 
-    # Expenses & Incomes with audit trail
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS expenses (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -164,6 +164,7 @@ def initialize_database():
             FOREIGN KEY(category_id) REFERENCES expense_categories(id)
         )
     ''')
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS incomes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -185,7 +186,6 @@ def initialize_database():
         )
     ''')
 
-    # Fee structure, invoices, payments
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS fee_structure (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -203,6 +203,7 @@ def initialize_database():
             FOREIGN KEY(class_id) REFERENCES classes(id)
         )
     ''')
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS invoices (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -222,6 +223,7 @@ def initialize_database():
             FOREIGN KEY(student_id) REFERENCES students(id)
         )
     ''')
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS payments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -239,7 +241,6 @@ def initialize_database():
         )
     ''')
 
-    # Audit log for critical actions
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS audit_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -252,16 +253,45 @@ def initialize_database():
 
     conn.commit()
 
+    # Migrations: ensure normalized_category exists and is backfilled
+    # (This avoids OperationalError when older DBs lack the column)
+    try:
+        if not table_has_column(conn, "uniform_categories", "normalized_category"):
+            cursor.execute("ALTER TABLE uniform_categories ADD COLUMN normalized_category TEXT")
+            conn.commit()
+            # Backfill normalized_category from category
+            rows = cursor.execute("SELECT id, category FROM uniform_categories").fetchall()
+            for r in rows:
+                if r["category"]:
+                    cursor.execute("UPDATE uniform_categories SET normalized_category = ? WHERE id = ?", (normalize_text(r["category"]), r["id"]))
+            conn.commit()
+    except sqlite3.OperationalError:
+        # If ALTER TABLE fails for any reason, continue safely
+        pass
+
+    # Migrations: ensure normalized_name exists in students and backfill
+    try:
+        if not table_has_column(conn, "students", "normalized_name"):
+            cursor.execute("ALTER TABLE students ADD COLUMN normalized_name TEXT")
+            conn.commit()
+            rows = cursor.execute("SELECT id, name FROM students").fetchall()
+            for r in rows:
+                if r["name"]:
+                    cursor.execute("UPDATE students SET normalized_name = ? WHERE id = ?", (normalize_text(r["name"]), r["id"]))
+            conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
     # Seed default admin user if none exists
-    cursor.execute("SELECT COUNT(*) FROM users")
-    if cursor.fetchone()[0] == 0:
+    cursor.execute("SELECT COUNT(*) as cnt FROM users")
+    if cursor.fetchone()["cnt"] == 0:
         default_user = "admin"
         default_pass = "costa2026"
         cursor.execute("INSERT OR IGNORE INTO users (username, password_hash, role, full_name) VALUES (?, ?, ?, ?)",
                        (default_user, hash_password(default_pass), "Admin", "Administrator"))
         conn.commit()
 
-    # Seed uniform categories and inventory if missing
+    # Seed uniform categories and uniforms if missing
     uniform_seeds = [
         ('Boys Main Shorts', 'boys', 0),
         ('Button Shirts Main', 'shared', 1),
@@ -272,7 +302,7 @@ def initialize_database():
     ]
     for name, gender, shared in uniform_seeds:
         nname = normalize_text(name)
-        cursor.execute("SELECT id FROM uniform_categories WHERE normalized_category = ?", (nname,))
+        cursor.execute("SELECT id FROM uniform_categories WHERE normalized_category = ? OR category = ?", (nname, name))
         row = cursor.fetchone()
         if not row:
             cursor.execute("INSERT INTO uniform_categories (category, normalized_category, gender, is_shared) VALUES (?, ?, ?, ?)",
@@ -281,8 +311,15 @@ def initialize_database():
             cat_id = cursor.lastrowid
             cursor.execute("INSERT OR IGNORE INTO uniforms (category_id, stock, unit_price) VALUES (?, 0, 0.0)", (cat_id,))
             conn.commit()
+        else:
+            # ensure uniforms row exists
+            cat_id = row["id"]
+            cursor.execute("SELECT id FROM uniforms WHERE category_id = ?", (cat_id,))
+            if not cursor.fetchone():
+                cursor.execute("INSERT INTO uniforms (category_id, stock, unit_price) VALUES (?, 0, 0.0)", (cat_id,))
+                conn.commit()
 
-    # Seed expense categories
+    # Seed expense categories if missing
     expense_seeds = [
         ('Medical', 'Expense'), ('Salaries', 'Expense'), ('Utilities', 'Expense'),
         ('Maintenance', 'Expense'), ('Supplies', 'Expense'), ('Transport', 'Expense'),
@@ -297,6 +334,7 @@ def initialize_database():
 
     conn.close()
 
+# Run initialization (safe)
 initialize_database()
 
 # ---------------------------
@@ -367,7 +405,6 @@ def df_to_excel_bytes(df: pd.DataFrame, sheet_name="Sheet1"):
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
         df.to_excel(writer, sheet_name=sheet_name, index=False)
-        writer.save()
     buf.seek(0)
     return buf
 
@@ -379,21 +416,17 @@ def dataframe_to_pdf_bytes(df: pd.DataFrame, title="Report"):
     c.drawString(40, height - 40, title)
     c.setFont("Helvetica", 10)
     y = height - 60
-    # Header
     cols = list(df.columns)
     col_width = max(60, (width - 80) / max(1, len(cols)))
-    # Draw header row
     for i, col in enumerate(cols):
         c.drawString(40 + i * col_width, y, str(col))
     y -= 14
-    # Draw rows
     for _, row in df.iterrows():
         if y < 40:
             c.showPage()
             y = height - 40
         for i, col in enumerate(cols):
             text = str(row[col])
-            # truncate if too long
             if len(text) > 40:
                 text = text[:37] + "..."
             c.drawString(40 + i * col_width, y, text)
@@ -413,7 +446,7 @@ def download_options(df: pd.DataFrame, filename_base="report", title="Report"):
         st.download_button("Download PDF", pdf_buf, f"{filename_base}.pdf", "application/pdf")
 
 # ---------------------------
-# Core features
+# Main navigation
 # ---------------------------
 page = st.sidebar.radio("Menu", ["Dashboard", "Students", "Uniforms", "Finances", "Financial Report", "Fee Management"])
 
@@ -425,17 +458,17 @@ if page == "Dashboard":
     st.header("📊 Financial Overview")
     col1, col2, col3, col4 = st.columns(4)
 
-    total_income = conn.execute("SELECT COALESCE(SUM(amount),0) FROM incomes").fetchone()[0] or 0
+    total_income = conn.execute("SELECT COALESCE(SUM(amount),0) as s FROM incomes").fetchone()["s"] or 0
     col1.metric("Total Income", f"USh {total_income:,.0f}")
 
-    total_expenses = conn.execute("SELECT COALESCE(SUM(amount),0) FROM expenses").fetchone()[0] or 0
+    total_expenses = conn.execute("SELECT COALESCE(SUM(amount),0) as s FROM expenses").fetchone()["s"] or 0
     col2.metric("Total Expenses", f"USh {total_expenses:,.0f}")
 
     net_balance = total_income - total_expenses
     col3.metric("Net Balance", f"USh {net_balance:,.0f}", delta=f"USh {net_balance:,.0f}")
 
     try:
-        outstanding_fees = conn.execute("SELECT COALESCE(SUM(balance_amount),0) FROM invoices WHERE status IN ('Pending','Partially Paid')").fetchone()[0] or 0
+        outstanding_fees = conn.execute("SELECT COALESCE(SUM(balance_amount),0) as s FROM invoices WHERE status IN ('Pending','Partially Paid')").fetchone()["s"] or 0
     except:
         outstanding_fees = 0
     col4.metric("Outstanding Fees", f"USh {outstanding_fees:,.0f}")
@@ -544,8 +577,7 @@ elif page == "Students":
             if not name or cls_id is None:
                 st.error("Provide student name and class")
             else:
-                # Duplicate detection
-                existing = [r["normalized_name"] for r in conn.execute("SELECT normalized_name FROM students").fetchall()]
+                existing = [r["normalized_name"] for r in conn.execute("SELECT normalized_name FROM students").fetchall() if r["normalized_name"]]
                 nname = normalize_text(name)
                 dup, match = is_near_duplicate(nname, existing)
                 if dup:
@@ -558,7 +590,6 @@ elif page == "Students":
                     """, (name.strip(), nname, int(age), enroll_date.isoformat(), cls_id, student_type, 1 if student_type == "New" else 0))
                     conn.commit()
                     student_id = cur.lastrowid
-                    # Record registration fee as income if new
                     if student_type == "New":
                         try:
                             cur.execute("""
@@ -610,17 +641,14 @@ elif page == "Students":
                             st.error("Amount exceeds invoice balance")
                         else:
                             cur = conn.cursor()
-                            # Update invoice safely
                             new_paid = (invoice_row['paid_amount'] or 0) + amount
                             new_balance = (invoice_row['balance_amount'] if invoice_row['balance_amount'] is not None else invoice_row['total_amount']) - amount
                             new_status = 'Fully Paid' if new_balance <= 0 else 'Partially Paid'
                             cur.execute("UPDATE invoices SET paid_amount = ?, balance_amount = ?, status = ? WHERE id = ?", (new_paid, new_balance, new_status, invoice_id))
-                            # Insert payment record
                             cur.execute("""
                                 INSERT INTO payments (invoice_id, receipt_number, payment_date, amount, payment_method, reference_number, received_by, notes, created_by)
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """, (invoice_id, receipt_number, payment_date.isoformat(), amount, payment_method, reference_number, st.session_state.user['username'], notes, st.session_state.user['username']))
-                            # Insert income record
                             try:
                                 cur.execute("""
                                     INSERT INTO incomes (date, receipt_number, amount, source, category_id, payment_method, payer, received_by, created_by)
@@ -669,7 +697,6 @@ elif page == "Students":
 elif page == "Uniforms":
     st.header("Uniforms – Inventory & Sales")
 
-    # Helper to fetch inventory
     def get_inventory_df():
         conn = get_db_connection()
         df = pd.read_sql_query("""
@@ -721,10 +748,8 @@ elif page == "Uniforms":
             if submit_update:
                 try:
                     cur = conn.cursor()
-                    # Use transaction to ensure atomicity
                     conn.isolation_level = None
                     cur.execute("BEGIN")
-                    # Determine final stock
                     final_stock = int(set_stock) if set_stock != current_stock else current_stock + int(add_stock)
                     cur.execute("UPDATE uniforms SET stock = ?, unit_price = ? WHERE category_id = ?", (final_stock, float(new_price), cat_id))
                     cur.execute("COMMIT")
@@ -739,7 +764,7 @@ elif page == "Uniforms":
                     st.error(f"Error updating inventory: {e}")
         conn.close()
 
-    # Record Sale (decrement stock atomically)
+    # Record Sale
     with tab_sale:
         st.subheader("Record Uniform Sale")
         conn = get_db_connection()
@@ -771,9 +796,6 @@ elif page == "Uniforms":
                         cur = conn.cursor()
                         conn.isolation_level = None
                         cur.execute("BEGIN")
-                        # Decrement stock
-                        cur.execute("SELECT stock FROM uniforms WHERE category_id = ? FOR UPDATE", (cat_id,))
-                        # SQLite doesn't support FOR UPDATE; we rely on transaction
                         cur.execute("SELECT stock FROM uniforms WHERE category_id = ?", (cat_id,))
                         current = cur.fetchone()[0]
                         if current < qty:
@@ -782,7 +804,6 @@ elif page == "Uniforms":
                         else:
                             new_stock = current - qty
                             cur.execute("UPDATE uniforms SET stock = ? WHERE category_id = ?", (new_stock, cat_id))
-                            # Record income
                             amount = qty * unit_price
                             cur.execute("""
                                 INSERT INTO incomes (date, receipt_number, amount, source, category_id, description, payment_method, payer, received_by, created_by)
@@ -802,7 +823,7 @@ elif page == "Uniforms":
                         st.error(f"Error recording sale: {e}")
         conn.close()
 
-    # Manage categories (add new uniform categories with duplicate detection)
+    # Manage categories
     with tab_manage:
         st.subheader("Manage Uniform Categories")
         conn = get_db_connection()
@@ -817,7 +838,7 @@ elif page == "Uniforms":
             if not cat_name:
                 st.error("Enter category name")
             else:
-                existing = [r["normalized_category"] for r in conn.execute("SELECT normalized_category FROM uniform_categories").fetchall()]
+                existing = [r["normalized_category"] for r in conn.execute("SELECT normalized_category FROM uniform_categories").fetchall() if r["normalized_category"]]
                 ncat = normalize_text(cat_name)
                 dup, match = is_near_duplicate(ncat, existing)
                 if dup:
@@ -937,7 +958,7 @@ elif page == "Finances":
         conn.close()
 
 # ---------------------------
-# Financial Report (custom filters & export)
+# Financial Report
 # ---------------------------
 elif page == "Financial Report":
     st.header("Financial Reports & Exports")
@@ -960,7 +981,6 @@ elif page == "Financial Report":
                     st.dataframe(df_inc, width='stretch')
                     st.subheader("Expenses")
                     st.dataframe(df_exp, width='stretch')
-                    # Combined summary
                     total_inc = df_inc['amount'].sum() if not df_inc.empty else 0
                     total_exp = df_exp['amount'].sum() if not df_exp.empty else 0
                     st.metric("Total Income", f"USh {total_inc:,.0f}")
@@ -975,7 +995,7 @@ elif page == "Financial Report":
                 else:
                     st.dataframe(df, width='stretch')
                     download_options(df, filename_base=f"by_category_{cat}", title=f"By Category - {cat}")
-            else:  # Outstanding Invoices
+            else:
                 df = pd.read_sql("SELECT invoice_number, student_id, issue_date, due_date, total_amount, paid_amount, balance_amount, status FROM invoices WHERE status IN ('Pending','Partially Paid') ORDER BY due_date", conn)
                 if df.empty:
                     st.info("No outstanding invoices")
@@ -1010,7 +1030,6 @@ elif page == "Fee Management":
         if create_fee:
             total_fee = sum([tuition_fee, uniform_fee, activity_fee, exam_fee, library_fee, other_fee])
             cur = conn.cursor()
-            # Upsert: if exists for class/term/year update, else insert
             existing = cur.execute("SELECT id FROM fee_structure WHERE class_id = ? AND term = ? AND academic_year = ?", (cls_id, term, academic_year)).fetchone()
             if existing:
                 cur.execute("""
@@ -1059,7 +1078,3 @@ elif page == "Fee Management":
                 st.success(f"Invoice {inv_no} created for USh {total_amount:,.0f}")
                 log_action("create_invoice", f"Invoice {inv_no} for student {student_id} amount {total_amount}", st.session_state.user['username'])
     conn.close()
-
-# ---------------------------
-# End of app
-# ---------------------------
