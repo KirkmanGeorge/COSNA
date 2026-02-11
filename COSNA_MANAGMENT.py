@@ -84,7 +84,7 @@ def initialize_database():
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Create core tables if missing
+    # Create core tables
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -253,20 +253,17 @@ def initialize_database():
 
     conn.commit()
 
-    # Migrations: ensure normalized_category exists and is backfilled
-    # (This avoids OperationalError when older DBs lack the column)
+    # Migrations: ensure normalized_category exists and backfill
     try:
         if not table_has_column(conn, "uniform_categories", "normalized_category"):
             cursor.execute("ALTER TABLE uniform_categories ADD COLUMN normalized_category TEXT")
             conn.commit()
-            # Backfill normalized_category from category
             rows = cursor.execute("SELECT id, category FROM uniform_categories").fetchall()
             for r in rows:
                 if r["category"]:
                     cursor.execute("UPDATE uniform_categories SET normalized_category = ? WHERE id = ?", (normalize_text(r["category"]), r["id"]))
             conn.commit()
     except sqlite3.OperationalError:
-        # If ALTER TABLE fails for any reason, continue safely
         pass
 
     # Migrations: ensure normalized_name exists in students and backfill
@@ -312,7 +309,6 @@ def initialize_database():
             cursor.execute("INSERT OR IGNORE INTO uniforms (category_id, stock, unit_price) VALUES (?, 0, 0.0)", (cat_id,))
             conn.commit()
         else:
-            # ensure uniforms row exists
             cat_id = row["id"]
             cursor.execute("SELECT id FROM uniforms WHERE category_id = ?", (cat_id,))
             if not cursor.fetchone():
@@ -374,7 +370,7 @@ def login_ui():
                 st.session_state.user = {"id": user["id"], "username": user["username"], "role": user["role"], "full_name": user["full_name"]}
                 st.success(f"Welcome back, {user['full_name'] or user['username']}!")
                 log_action("login", f"user {username} logged in", username)
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.error("Invalid credentials")
                 return False
@@ -385,7 +381,7 @@ def logout():
         if st.session_state.user:
             log_action("logout", f"user {st.session_state.user['username']} logged out", st.session_state.user['username'])
         st.session_state.user = None
-        st.experimental_rerun()
+        st.rerun()
 
 # If not logged in, show login and stop
 if not st.session_state.user:
@@ -446,7 +442,7 @@ def download_options(df: pd.DataFrame, filename_base="report", title="Report"):
         st.download_button("Download PDF", pdf_buf, f"{filename_base}.pdf", "application/pdf")
 
 # ---------------------------
-# Main navigation
+# Core features & Navigation
 # ---------------------------
 page = st.sidebar.radio("Menu", ["Dashboard", "Students", "Uniforms", "Finances", "Financial Report", "Fee Management"])
 
@@ -662,7 +658,7 @@ elif page == "Students":
                             conn.commit()
                             st.success("Payment recorded and added to income")
                             log_action("record_payment", f"Payment {amount} for invoice {selected_invoice}", st.session_state.user['username'])
-                            st.experimental_rerun()
+                            st.rerun()
         conn.close()
 
     # Add new class
@@ -686,7 +682,7 @@ elif page == "Students":
                         conn.commit()
                         st.success(f"Class '{new_cls}' created")
                         log_action("add_class", f"Added class {new_cls}", st.session_state.user['username'])
-                        st.experimental_rerun()
+                        st.rerun()
                     except sqlite3.IntegrityError:
                         st.error("Class already exists")
         conn.close()
@@ -755,7 +751,7 @@ elif page == "Uniforms":
                     cur.execute("COMMIT")
                     st.success("Inventory updated")
                     log_action("update_uniform", f"Updated category {selected_category}: stock={final_stock}, price={new_price}", st.session_state.user['username'])
-                    st.experimental_rerun()
+                    st.rerun()
                 except Exception as e:
                     try:
                         cur.execute("ROLLBACK")
@@ -814,7 +810,7 @@ elif page == "Uniforms":
                             cur.execute("COMMIT")
                             st.success(f"Sale recorded. New stock: {new_stock}")
                             log_action("uniform_sale", f"Sold {qty} of {selected} for USh {amount}", st.session_state.user['username'])
-                            st.experimental_rerun()
+                            st.rerun()
                     except Exception as e:
                         try:
                             cur.execute("ROLLBACK")
@@ -853,7 +849,7 @@ elif page == "Uniforms":
                     conn.commit()
                     st.success("Uniform category added")
                     log_action("add_uniform_category", f"Added {cat_name} stock={initial_stock} price={unit_price}", st.session_state.user['username'])
-                    st.experimental_rerun()
+                    st.rerun()
         conn.close()
 
 # ---------------------------
@@ -958,7 +954,7 @@ elif page == "Finances":
         conn.close()
 
 # ---------------------------
-# Financial Report
+# Financial Report (custom filters & export)
 # ---------------------------
 elif page == "Financial Report":
     st.header("Financial Reports & Exports")
@@ -995,7 +991,7 @@ elif page == "Financial Report":
                 else:
                     st.dataframe(df, width='stretch')
                     download_options(df, filename_base=f"by_category_{cat}", title=f"By Category - {cat}")
-            else:
+            else:  # Outstanding Invoices
                 df = pd.read_sql("SELECT invoice_number, student_id, issue_date, due_date, total_amount, paid_amount, balance_amount, status FROM invoices WHERE status IN ('Pending','Partially Paid') ORDER BY due_date", conn)
                 if df.empty:
                     st.info("No outstanding invoices")
