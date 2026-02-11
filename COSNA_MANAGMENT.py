@@ -61,7 +61,7 @@ def hash_password(password: str, salt: str = None):
 def verify_password(stored: str, provided: str):
     try:
         salt, hashed = stored.split('$', 1)
-    except:
+    except Exception:
         return False
     return hash_password(provided, salt) == stored
 
@@ -401,6 +401,7 @@ def log_action(action, details="", performed_by="system"):
     except Exception:
         pass
 
+# Ensure session user structure exists and is safe to access
 if 'user' not in st.session_state:
     st.session_state.user = None
 
@@ -417,8 +418,14 @@ def login_ui():
                 return False
             user = get_user(username)
             if user and verify_password(user["password_hash"], password):
-                st.session_state.user = {"id": user["id"], "username": user["username"], "role": user["role"], "full_name": user["full_name"]}
-                st.success(f"Welcome back, {user['full_name'] or user['username']}!")
+                # store a safe dict with expected keys
+                st.session_state.user = {
+                    "id": user["id"],
+                    "username": user["username"],
+                    "role": user["role"] if user["role"] is not None else "Staff",
+                    "full_name": user["full_name"] if user["full_name"] is not None else user["username"]
+                }
+                st.success(f"Welcome back, {st.session_state.user['full_name']}!")
                 log_action("login", f"user {username} logged in", username)
                 st.rerun()
             else:
@@ -427,9 +434,11 @@ def login_ui():
     return True
 
 def logout():
+    # safe logout button that won't error if user is None
     if st.sidebar.button("Logout"):
         if st.session_state.user:
-            log_action("logout", f"user {st.session_state.user['username']} logged out", st.session_state.user['username'])
+            uname = st.session_state.user.get('username', 'unknown')
+            log_action("logout", f"user {uname} logged out", uname)
         st.session_state.user = None
         st.rerun()
 
@@ -449,15 +458,20 @@ def find_logo_path():
 
 LOGO_PATH = find_logo_path()
 
-# Sidebar user info, logo, and logout
+# Sidebar user info, logo, and logout (guarded access)
 with st.sidebar:
     if LOGO_PATH:
         try:
             st.image(LOGO_PATH, width=140)
         except Exception:
             pass
-    st.markdown(f"**User:** {st.session_state.user['full_name'] or st.session_state.user['username']}")
-    st.markdown(f"**Role:** {st.session_state.user['role']}")
+    # safe access to user info
+    user_safe = st.session_state.get('user')
+    if user_safe:
+        st.markdown(f"**User:** {user_safe.get('full_name') or user_safe.get('username')}")
+        st.markdown(f"**Role:** {user_safe.get('role') or 'Staff'}")
+    else:
+        st.markdown("**User:** Not logged in")
     logout()
 
 # ---------------------------
@@ -480,14 +494,12 @@ def dataframe_to_pdf_bytes(df: pd.DataFrame, title="Report", logo_path=None):
     if logo_path and os.path.exists(logo_path):
         try:
             img = ImageReader(logo_path)
-            # scale logo to fit
             img_w, img_h = img.getSize()
             max_w = 80
             scale = min(max_w / img_w, 1.0)
             draw_w = img_w * scale
             draw_h = img_h * scale
             c.drawImage(img, 40, y_top - draw_h, width=draw_w, height=draw_h, mask='auto')
-            # Move title right if logo drawn
             title_x = 40 + draw_w + 10
         except Exception:
             title_x = 40
