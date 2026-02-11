@@ -6,6 +6,7 @@ from datetime import datetime, date
 from io import BytesIO
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
+from reportlab.lib.utils import ImageReader
 import random
 import string
 import difflib
@@ -20,6 +21,7 @@ APP_TITLE = "COSNA School Management System"
 DB_PATH = "cosna_school.db"
 REGISTRATION_FEE = 50000.0
 SIMILARITY_THRESHOLD = 0.82  # fuzzy match threshold for near-duplicates
+LOGO_FILENAMES = ["school_badge.png", "badge.png", "logo.png"]  # place your badge file in app folder with one of these names
 
 st.set_page_config(page_title=APP_TITLE, layout="wide", initial_sidebar_state="expanded")
 st.title(APP_TITLE)
@@ -92,7 +94,6 @@ def safe_alter_add_column(conn, table, column_def):
             conn.commit()
             return True
     except Exception:
-        # If ALTER TABLE fails for some reason, return False but don't crash
         return False
     return False
 
@@ -273,22 +274,16 @@ def initialize_database():
     conn.commit()
 
     # Ensure columns referenced by code exist (migrations)
-    # incomes: created_by, received_by, description, category_id, receipt_number
     safe_alter_add_column(conn, "incomes", "created_by TEXT")
     safe_alter_add_column(conn, "incomes", "received_by TEXT")
     safe_alter_add_column(conn, "incomes", "description TEXT")
     safe_alter_add_column(conn, "incomes", "category_id INTEGER")
     safe_alter_add_column(conn, "incomes", "receipt_number TEXT UNIQUE")
-    # expenses: created_by, approved_by, voucher_number
     safe_alter_add_column(conn, "expenses", "created_by TEXT")
     safe_alter_add_column(conn, "expenses", "approved_by TEXT")
     safe_alter_add_column(conn, "expenses", "voucher_number TEXT UNIQUE")
-    # students: normalized_name
     safe_alter_add_column(conn, "students", "normalized_name TEXT")
-    # uniform_categories: normalized_category
     safe_alter_add_column(conn, "uniform_categories", "normalized_category TEXT")
-    # uniforms: ensure exists (already created above)
-    # invoices/payments: created_by
     safe_alter_add_column(conn, "invoices", "created_by TEXT")
     safe_alter_add_column(conn, "payments", "created_by TEXT")
 
@@ -443,14 +438,30 @@ if not st.session_state.user:
     if not login_ui():
         st.stop()
 
-# Sidebar user info and logout
+# ---------------------------
+# Logo handling
+# ---------------------------
+def find_logo_path():
+    for fname in LOGO_FILENAMES:
+        if os.path.exists(fname):
+            return fname
+    return None
+
+LOGO_PATH = find_logo_path()
+
+# Sidebar user info, logo, and logout
 with st.sidebar:
+    if LOGO_PATH:
+        try:
+            st.image(LOGO_PATH, width=140)
+        except Exception:
+            pass
     st.markdown(f"**User:** {st.session_state.user['full_name'] or st.session_state.user['username']}")
     st.markdown(f"**Role:** {st.session_state.user['role']}")
     logout()
 
 # ---------------------------
-# Export helpers (Excel & PDF)
+# Export helpers (Excel & PDF) with logo
 # ---------------------------
 def df_to_excel_bytes(df: pd.DataFrame, sheet_name="Sheet1"):
     buf = BytesIO()
@@ -459,29 +470,53 @@ def df_to_excel_bytes(df: pd.DataFrame, sheet_name="Sheet1"):
     buf.seek(0)
     return buf
 
-def dataframe_to_pdf_bytes(df: pd.DataFrame, title="Report"):
+def dataframe_to_pdf_bytes(df: pd.DataFrame, title="Report", logo_path=None):
     buf = BytesIO()
     c = canvas.Canvas(buf, pagesize=letter)
     width, height = letter
+
+    # Draw logo if available
+    y_top = height - 40
+    if logo_path and os.path.exists(logo_path):
+        try:
+            img = ImageReader(logo_path)
+            # scale logo to fit
+            img_w, img_h = img.getSize()
+            max_w = 80
+            scale = min(max_w / img_w, 1.0)
+            draw_w = img_w * scale
+            draw_h = img_h * scale
+            c.drawImage(img, 40, y_top - draw_h, width=draw_w, height=draw_h, mask='auto')
+            # Move title right if logo drawn
+            title_x = 40 + draw_w + 10
+        except Exception:
+            title_x = 40
+    else:
+        title_x = 40
+
     c.setFont("Helvetica-Bold", 14)
-    c.drawString(40, height - 40, title)
+    c.drawString(title_x, y_top, title)
     c.setFont("Helvetica", 10)
-    y = height - 60
+    y = y_top - 30
+
     cols = list(df.columns)
     col_width = max(60, (width - 80) / max(1, len(cols)))
+    # Header
     for i, col in enumerate(cols):
         c.drawString(40 + i * col_width, y, str(col))
     y -= 14
+    # Rows
     for _, row in df.iterrows():
         if y < 40:
             c.showPage()
             y = height - 40
         for i, col in enumerate(cols):
             text = str(row[col])
-            if len(text) > 40:
-                text = text[:37] + "..."
+            if len(text) > 60:
+                text = text[:57] + "..."
             c.drawString(40 + i * col_width, y, text)
         y -= 12
+
     c.showPage()
     c.save()
     buf.seek(0)
@@ -493,7 +528,7 @@ def download_options(df: pd.DataFrame, filename_base="report", title="Report"):
         excel_buf = df_to_excel_bytes(df)
         st.download_button("Download Excel", excel_buf, f"{filename_base}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     with col2:
-        pdf_buf = dataframe_to_pdf_bytes(df, title=title)
+        pdf_buf = dataframe_to_pdf_bytes(df, title=title, logo_path=LOGO_PATH)
         st.download_button("Download PDF", pdf_buf, f"{filename_base}.pdf", "application/pdf")
 
 # ---------------------------
@@ -539,7 +574,7 @@ if page == "Dashboard":
                 st.info("No income records yet")
             else:
                 st.dataframe(df_inc, width='stretch')
-        except Exception as e:
+        except Exception:
             st.info("No income records yet or error loading incomes")
     with colB:
         st.subheader("Recent Expenses (Last 5)")
@@ -705,79 +740,72 @@ elif page == "Students":
                 st.info("No invoices for this student")
             else:
                 st.dataframe(invoices[['invoice_number','issue_date','due_date','total_amount','paid_amount','balance_amount','status']], width='stretch')
-                with st.expander("Record Payment"):
-                    with st.form("record_payment_form"):
-                        selected_invoice = st.selectbox("Select Invoice", invoices['invoice_number'].tolist())
-                        invoice_row = invoices[invoices['invoice_number'] == selected_invoice].iloc[0]
-                        invoice_id = int(invoice_row['id'])
-                        current_balance = float(invoice_row['balance_amount'] if invoice_row['balance_amount'] is not None else invoice_row['total_amount'])
-                        payment_date = st.date_input("Payment Date", date.today())
-                        amount = st.number_input("Amount (USh)", min_value=0.0, max_value=float(current_balance), value=0.0, step=1000.0)
-                        payment_method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"])
-                        reference_number = st.text_input("Reference Number")
-                        receipt_number = st.text_input("Receipt Number", value=generate_receipt_number())
-                        notes = st.text_area("Notes")
-                        submit_payment = st.form_submit_button("Record Payment")
-                    if submit_payment:
-                        if amount <= 0:
+                # Show payment history for selected student
+                st.subheader("Payment History")
+                try:
+                    payments = pd.read_sql("SELECT p.payment_date, p.amount, p.payment_method, p.receipt_number, p.reference_number, p.notes FROM payments p JOIN invoices i ON p.invoice_id = i.id WHERE i.student_id = ? ORDER BY p.payment_date DESC", conn, params=(student_id,))
+                    if payments.empty:
+                        st.info("No payments recorded for this student")
+                    else:
+                        st.dataframe(payments, width='stretch')
+                        download_options(payments, filename_base=f"payments_student_{student_id}", title=f"Payments for Student {student_id}")
+                except Exception:
+                    st.info("No payments or error loading payments")
+
+                # Allow paying an outstanding invoice here as requested
+                st.subheader("Pay Outstanding Invoice")
+                outstanding_invoices = invoices[invoices['status'].isin(['Pending','Partially Paid'])]
+                if outstanding_invoices.empty:
+                    st.info("No outstanding invoices to pay")
+                else:
+                    chosen_inv = st.selectbox("Select Invoice to Pay", outstanding_invoices['invoice_number'].tolist())
+                    inv_row = outstanding_invoices[outstanding_invoices['invoice_number'] == chosen_inv].iloc[0]
+                    inv_id = int(inv_row['id'])
+                    inv_balance = float(inv_row['balance_amount'] if inv_row['balance_amount'] is not None else inv_row['total_amount'])
+                    st.write(f"Invoice {chosen_inv} — Balance: USh {inv_balance:,.0f}")
+                    with st.form("pay_invoice_form"):
+                        pay_date = st.date_input("Payment Date", date.today())
+                        pay_amount = st.number_input("Amount (USh)", min_value=0.0, max_value=float(inv_balance), value=float(inv_balance), step=100.0)
+                        pay_method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"])
+                        pay_ref = st.text_input("Reference Number")
+                        pay_receipt = st.text_input("Receipt Number", value=generate_receipt_number())
+                        pay_notes = st.text_area("Notes")
+                        submit_pay = st.form_submit_button("Record Payment")
+                    if submit_pay:
+                        if pay_amount <= 0:
                             st.error("Enter a positive amount")
-                        elif amount > current_balance + 0.0001:
+                        elif pay_amount > inv_balance + 0.0001:
                             st.error("Amount exceeds invoice balance")
                         else:
                             try:
                                 cur = conn.cursor()
-                                new_paid = (invoice_row['paid_amount'] or 0) + amount
-                                new_balance = (invoice_row['balance_amount'] if invoice_row['balance_amount'] is not None else invoice_row['total_amount']) - amount
+                                # Update invoice
+                                new_paid = (inv_row['paid_amount'] or 0) + pay_amount
+                                new_balance = (inv_row['balance_amount'] if inv_row['balance_amount'] is not None else inv_row['total_amount']) - pay_amount
                                 new_status = 'Fully Paid' if new_balance <= 0 else 'Partially Paid'
-                                cur.execute("UPDATE invoices SET paid_amount = ?, balance_amount = ?, status = ? WHERE id = ?", (new_paid, new_balance, new_status, invoice_id))
+                                cur.execute("UPDATE invoices SET paid_amount = ?, balance_amount = ?, status = ? WHERE id = ?", (new_paid, new_balance, new_status, inv_id))
+                                # Insert payment record
                                 cur.execute("""
                                     INSERT INTO payments (invoice_id, receipt_number, payment_date, amount, payment_method, reference_number, received_by, notes, created_by)
                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                """, (invoice_id, receipt_number, payment_date.isoformat(), amount, payment_method, reference_number, st.session_state.user['username'], notes, st.session_state.user['username']))
+                                """, (inv_id, pay_receipt, pay_date.isoformat(), pay_amount, pay_method, pay_ref, st.session_state.user['username'], pay_notes, st.session_state.user['username']))
+                                # Insert income record
                                 try:
                                     cur.execute("""
                                         INSERT INTO incomes (date, receipt_number, amount, source, category_id, payment_method, payer, received_by, created_by)
                                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                    """, (payment_date.isoformat(), receipt_number, amount, "Tuition Fees",
+                                    """, (pay_date.isoformat(), pay_receipt, pay_amount, "Tuition Fees",
                                           (conn.execute("SELECT id FROM expense_categories WHERE name = 'Tuition Fees'").fetchone() or [None])[0],
-                                          payment_method, students[students['id'] == student_id]['name'].iloc[0], st.session_state.user['username'], st.session_state.user['username']))
+                                          pay_method, selected.split(" - ")[0], st.session_state.user['username'], st.session_state.user['username']))
                                 except Exception:
                                     cur.execute("INSERT INTO incomes (date, amount, source, created_by) VALUES (?, ?, ?, ?)",
-                                                (payment_date.isoformat(), amount, f"Tuition fee from {students[students['id'] == student_id]['name'].iloc[0]}", st.session_state.user['username']))
+                                                (pay_date.isoformat(), pay_amount, f"Tuition fee payment for invoice {chosen_inv}", st.session_state.user['username']))
                                 conn.commit()
-                                st.success("Payment recorded and added to income")
-                                log_action("record_payment", f"Payment {amount} for invoice {selected_invoice}", st.session_state.user['username'])
+                                st.success("Payment recorded and invoice updated")
+                                log_action("pay_invoice", f"Payment {pay_amount} for invoice {chosen_inv}", st.session_state.user['username'])
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Error recording payment: {e}")
-        conn.close()
-
-    # Add new class
-    with st.expander("Add New Class"):
-        conn = get_db_connection()
-        with st.form("add_class_form"):
-            new_cls = st.text_input("Class Name")
-            create_cls = st.form_submit_button("Create Class")
-        if create_cls:
-            if not new_cls:
-                st.error("Enter class name")
-            else:
-                try:
-                    n = normalize_text(new_cls)
-                    existing = [r["name"] for r in conn.execute("SELECT name FROM classes").fetchall()]
-                    dup, match = is_near_duplicate(n, existing)
-                    if dup:
-                        st.warning(f"A similar class exists: '{match}'")
-                    else:
-                        conn.execute("INSERT INTO classes (name) VALUES (?)", (new_cls.strip(),))
-                        conn.commit()
-                        st.success(f"Class '{new_cls}' created")
-                        log_action("add_class", f"Added class {new_cls}", st.session_state.user['username'])
-                        st.rerun()
-                except sqlite3.IntegrityError:
-                    st.error("Class already exists")
-                except Exception as e:
-                    st.error(f"Error creating class: {e}")
         conn.close()
 
 # ---------------------------
@@ -1053,7 +1081,6 @@ elif page == "Finances":
         try:
             df_inc = pd.read_sql("SELECT id, date, receipt_number, amount, source, payer, created_by FROM incomes ORDER BY date DESC LIMIT 500", conn)
         except Exception:
-            # If created_by or other columns missing, select a safe subset
             try:
                 df_inc = pd.read_sql("SELECT id, date, receipt_number, amount, source, payer FROM incomes ORDER BY date DESC LIMIT 500", conn)
             except Exception:
@@ -1086,7 +1113,7 @@ elif page == "Financial Report":
     st.header("Financial Reports & Exports")
     conn = get_db_connection()
     st.subheader("Generate Report")
-    report_type = st.selectbox("Report Type", ["Income vs Expense (date range)", "By Category", "Outstanding Invoices"])
+    report_type = st.selectbox("Report Type", ["Income vs Expense (date range)", "By Category", "Outstanding Invoices", "Student Payment Summary"])
     start_date = st.date_input("Start Date", date.today().replace(day=1))
     end_date = st.date_input("End Date", date.today())
     if start_date > end_date:
@@ -1118,19 +1145,41 @@ elif page == "Financial Report":
                     else:
                         st.dataframe(df, width='stretch')
                         download_options(df, filename_base=f"by_category_{cat}", title=f"By Category - {cat}")
-                else:  # Outstanding Invoices
+                elif report_type == "Outstanding Invoices":
                     df = pd.read_sql("SELECT invoice_number, student_id, issue_date, due_date, total_amount, paid_amount, balance_amount, status FROM invoices WHERE status IN ('Pending','Partially Paid') ORDER BY due_date", conn)
                     if df.empty:
                         st.info("No outstanding invoices")
                     else:
                         st.dataframe(df, width='stretch')
                         download_options(df, filename_base="outstanding_invoices", title="Outstanding Invoices")
+                else:  # Student Payment Summary
+                    students = pd.read_sql("SELECT id, name FROM students ORDER BY name", conn)
+                    if students.empty:
+                        st.info("No students available")
+                    else:
+                        sel = st.selectbox("Select Student", students.apply(lambda x: f"{x['name']} (ID: {x['id']})", axis=1))
+                        sid = int(sel.split("(ID: ")[1].replace(")", ""))
+                        # Summarize invoices and payments per term/academic year
+                        df_inv = pd.read_sql("SELECT invoice_number, academic_year, term, total_amount, paid_amount, balance_amount, status, issue_date FROM invoices WHERE student_id = ? ORDER BY issue_date DESC", conn, params=(sid,))
+                        df_pay = pd.read_sql("SELECT payment_date, amount, payment_method, receipt_number, reference_number FROM payments p JOIN invoices i ON p.invoice_id = i.id WHERE i.student_id = ? ORDER BY payment_date DESC", conn, params=(sid,))
+                        st.subheader("Invoices")
+                        if df_inv.empty:
+                            st.info("No invoices for this student")
+                        else:
+                            st.dataframe(df_inv, width='stretch')
+                            download_options(df_inv, filename_base=f"student_{sid}_invoices", title=f"Invoices for Student {sid}")
+                        st.subheader("Payments")
+                        if df_pay.empty:
+                            st.info("No payments for this student")
+                        else:
+                            st.dataframe(df_pay, width='stretch')
+                            download_options(df_pay, filename_base=f"student_{sid}_payments", title=f"Payments for Student {sid}")
             except Exception as e:
                 st.error(f"Error generating report: {e}")
     conn.close()
 
 # ---------------------------
-# Fee Management
+# Fee Management (detailed)
 # ---------------------------
 elif page == "Fee Management":
     st.header("Fee Management")
