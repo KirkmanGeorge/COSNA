@@ -1432,9 +1432,7 @@ elif page == "Audit Log":
         st.error(f"Error loading audit log: {e}")
     conn.close()
 
-# ---------------------------
-# Fee Management
-# ---------------------------
+# ---------------------------# Fee Management - FULL IMPLEMENTATION
 elif page == "Fee Management":
     require_role(["Admin", "Accountant"])
     st.header("Fee Management")
@@ -1444,7 +1442,8 @@ elif page == "Fee Management":
     with st.form("term_config_form"):
         col1, col2 = st.columns(2)
         with col1:
-            academic_year = st.text_input("Academic Year (e.g., 2025/2026)", value=f"{date.today().year}/{date.today().year + 1}")
+            academic_year = st.text_input("Academic Year (e.g., 2025/2026)", 
+                                        value=f"{date.today().year}/{date.today().year + 1}")
             term = st.selectbox("Term", ["Term 1", "Term 2", "Term 3"])
         with col2:
             start_date = st.date_input("Start Date")
@@ -1457,95 +1456,108 @@ elif page == "Fee Management":
         else:
             try:
                 cur = conn.cursor()
-                existing = cur.execute(
+                row = cur.execute(
                     "SELECT id FROM academic_terms WHERE academic_year = ? AND term = ?",
                     (academic_year, term)
                 ).fetchone()
-                if existing:
+                if row:
                     cur.execute(
                         "UPDATE academic_terms SET start_date = ?, end_date = ? WHERE id = ?",
-                        (start_date.isoformat(), end_date.isoformat(), existing[0])
+                        (start_date.isoformat(), end_date.isoformat(), row[0])
                     )
-                    st.success("Term updated successfully")
+                    st.success("Term updated")
                 else:
                     cur.execute(
                         "INSERT INTO academic_terms (academic_year, term, start_date, end_date) VALUES (?, ?, ?, ?)",
                         (academic_year, term, start_date.isoformat(), end_date.isoformat())
                     )
-                    st.success("New term created successfully")
+                    st.success("Term created")
                 conn.commit()
-                safe_rerun()
+                st.rerun()
             except Exception as e:
-                st.error(f"Error saving term: {e}")
+                st.error(f"Error: {e}")
 
     st.subheader("Existing Academic Terms")
-    terms_list = pd.read_sql("SELECT * FROM academic_terms ORDER BY academic_year DESC, term", conn)
-    if not terms_list.empty:
-        st.dataframe(terms_list, use_container_width=True)
+    terms = pd.read_sql("SELECT * FROM academic_terms ORDER BY academic_year DESC, term", conn)
+    if not terms.empty:
+        st.dataframe(terms, use_container_width=True)
     else:
-        st.info("No terms configured yet.")
+        st.info("No terms yet")
 
     st.subheader("Define Fee Structure")
     classes = pd.read_sql("SELECT id, name FROM classes ORDER BY name", conn)
-    current_terms = pd.read_sql("SELECT id, term, academic_year FROM academic_terms WHERE date('now') <= end_date ORDER BY academic_year DESC, term", conn)
+    active_terms = pd.read_sql(
+        "SELECT id, term, academic_year FROM academic_terms WHERE date('now') <= end_date "
+        "ORDER BY academic_year DESC, term", conn
+    )
+
     if classes.empty:
-        st.info("No classes defined yet.")
-    elif current_terms.empty:
-        st.info("No active terms. Create a term first.")
+        st.info("No classes found. Add some in Students → Manage Classes.")
+    elif active_terms.empty:
+        st.info("No active terms. Create one above.")
     else:
         with st.form("fee_structure_form"):
-            term_label = st.selectbox("Select Term", current_terms.apply(lambda x: f"{x['term']} {x['academic_year']} (ID:{x['id']})", axis=1))
-            selected_term_id = int(term_label.split("(ID:")[1].replace(")", ""))
-            cls_name = st.selectbox("Class", classes["name"].tolist())
-            cls_id = classes[classes["name"] == cls_name]["id"].iloc[0]
-            tuition_fee = st.number_input("Tuition Fee", min_value=0.0, value=0.0, step=100.0)
-            uniform_fee = st.number_input("Uniform Fee", min_value=0.0, value=0.0, step=100.0)
-            activity_fee = st.number_input("Activity Fee", min_value=0.0, value=0.0, step=100.0)
-            exam_fee = st.number_input("Exam Fee", min_value=0.0, value=0.0, step=100.0)
-            library_fee = st.number_input("Library Fee", min_value=0.0, value=0.0, step=100.0)
-            other_fee = st.number_input("Other Fee", min_value=0.0, value=0.0, step=100.0)
-            submit_fee = st.form_submit_button("Save Fee Structure")
+            term_str = st.selectbox(
+                "Select Term",
+                active_terms.apply(lambda r: f"{r['term']} {r['academic_year']} (ID:{r['id']})", axis=1)
+            )
+            term_id = int(term_str.split("ID:")[1][:-1])
 
-        if submit_fee:
-            try:
-                total_fee = sum([tuition_fee, uniform_fee, activity_fee, exam_fee, library_fee, other_fee])
-                cur = conn.cursor()
-                existing = cur.execute(
-                    "SELECT id FROM fee_structure WHERE term_id = ? AND class_id = ?",
-                    (selected_term_id, cls_id)
-                ).fetchone()
-                if existing:
-                    cur.execute("""
-                        UPDATE fee_structure 
-                        SET tuition_fee=?, uniform_fee=?, activity_fee=?, exam_fee=?, library_fee=?, other_fee=?, total_fee=?, created_at=CURRENT_TIMESTAMP
-                        WHERE id = ?
-                    """, (tuition_fee, uniform_fee, activity_fee, exam_fee, library_fee, other_fee, total_fee, existing[0]))
-                    st.success("Fee structure updated")
-                else:
-                    cur.execute("""
-                        INSERT INTO fee_structure 
-                        (term_id, class_id, tuition_fee, uniform_fee, activity_fee, exam_fee, library_fee, other_fee, total_fee)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (selected_term_id, cls_id, tuition_fee, uniform_fee, activity_fee, exam_fee, library_fee, other_fee, total_fee))
-                    st.success("Fee structure created")
-                conn.commit()
-                log_action("fee_structure_save", f"{'Updated' if existing else 'Created'} for term {selected_term_id}, class {cls_id}", st.session_state.user['username'])
-                safe_rerun()
-            except Exception as e:
-                st.error(f"Error saving fee structure: {e}")
+            class_name = st.selectbox("Class", classes["name"].tolist())
+            class_id = classes[classes["name"] == class_name]["id"].iloc[0]
+
+            tuition = st.number_input("Tuition Fee", 0.0, step=1000.0)
+            uniform = st.number_input("Uniform Fee", 0.0, step=1000.0)
+            activity = st.number_input("Activity Fee", 0.0, step=1000.0)
+            exam = st.number_input("Exam Fee", 0.0, step=1000.0)
+            library = st.number_input("Library Fee", 0.0, step=1000.0)
+            other = st.number_input("Other Fee", 0.0, step=1000.0)
+
+            if st.form_submit_button("Save Fee Structure"):
+                total = tuition + uniform + activity + exam + library + other
+                try:
+                    cur = conn.cursor()
+                    exists = cur.execute(
+                        "SELECT id FROM fee_structure WHERE term_id = ? AND class_id = ?",
+                        (term_id, class_id)
+                    ).fetchone()
+                    if exists:
+                        cur.execute("""
+                            UPDATE fee_structure SET 
+                                tuition_fee=?, uniform_fee=?, activity_fee=?, exam_fee=?, 
+                                library_fee=?, other_fee=?, total_fee=?, created_at=CURRENT_TIMESTAMP
+                            WHERE id = ?
+                        """, (tuition, uniform, activity, exam, library, other, total, exists[0]))
+                        st.success("Fee structure updated")
+                    else:
+                        cur.execute("""
+                            INSERT INTO fee_structure 
+                            (term_id, class_id, tuition_fee, uniform_fee, activity_fee, exam_fee, 
+                             library_fee, other_fee, total_fee)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (term_id, class_id, tuition, uniform, activity, exam, library, other, total))
+                        st.success("Fee structure created")
+                    conn.commit()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Save failed: {e}")
 
         st.subheader("Existing Fee Structures")
-        fee_struct_list = pd.read_sql("""
-            SELECT at.term, at.academic_year, c.name as class_name, fs.total_fee 
+        structures = pd.read_sql("""
+            SELECT 
+                at.term || ' ' || at.academic_year AS term,
+                c.name AS class,
+                fs.tuition_fee, fs.uniform_fee, fs.activity_fee, fs.exam_fee,
+                fs.library_fee, fs.other_fee, fs.total_fee
             FROM fee_structure fs
             JOIN academic_terms at ON fs.term_id = at.id
             JOIN classes c ON fs.class_id = c.id
             ORDER BY at.academic_year DESC, at.term, c.name
         """, conn)
-        if fee_struct_list.empty:
-            st.info("No fee structures defined yet.")
+        if not structures.empty:
+            st.dataframe(structures, use_container_width=True)
         else:
-            st.dataframe(fee_struct_list, use_container_width=True)
+            st.info("No fee structures saved yet")
 
     st.subheader("Generate Invoice")
     students = pd.read_sql("SELECT s.id, s.name, c.name as class_name FROM students s LEFT JOIN classes c ON s.class_id = c.id ORDER BY s.name", conn)
