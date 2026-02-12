@@ -468,7 +468,7 @@ def dataframe_to_pdf_bytes_landscape(df: pd.DataFrame, title="Report", logo_path
         try:
             img = ImageReader(logo_path)
             img_w, img_h = img.getSize()
-            max_w = 60
+            max_w = 100
             scale = min(max_w / img_w, 1.0)
             draw_w = img_w * scale
             draw_h = img_h * scale
@@ -480,7 +480,7 @@ def dataframe_to_pdf_bytes_landscape(df: pd.DataFrame, title="Report", logo_path
     c.setFont("Helvetica-Bold", 14)
     c.drawString(title_x, y_top, title)
     c.setFont("Helvetica", 9)
-    y = y_top - draw_h - 20
+    y = y_top - draw_h - 30  # Adjusted to prevent overlap, matching original positioning with extra margin
 
     cols = list(df.columns)
     # compute column widths to avoid collisions
@@ -635,7 +635,7 @@ if page == "Dashboard":
             if df_inc.empty:
                 st.info("No income records yet")
             else:
-                st.dataframe(df_inc, width='stretch')
+                st.dataframe(df_inc, use_container_width=True)
         except Exception:
             st.info("No income records yet or error loading incomes")
     with colB:
@@ -650,7 +650,7 @@ if page == "Dashboard":
             if df_exp.empty:
                 st.info("No expense records yet")
             else:
-                st.dataframe(df_exp, width='stretch')
+                st.dataframe(df_exp, use_container_width=True)
         except Exception:
             st.info("No expense records yet or error loading expenses")
 
@@ -672,7 +672,7 @@ if page == "Dashboard":
         else:
             df_pivot = df_monthly.pivot_table(index='month', columns='type', values='total_amount', aggfunc='sum').fillna(0)
             df_pivot['Net Balance'] = df_pivot.get('Income', 0) - df_pivot.get('Expense', 0)
-            st.dataframe(df_pivot, width='stretch')
+            st.dataframe(df_pivot, use_container_width=True)
             download_options(df_pivot.reset_index(), filename_base="monthly_financial_summary", title="Monthly Financial Summary")
     except Exception:
         st.info("No monthly data available")
@@ -718,7 +718,7 @@ elif page == "Students":
             if df.empty:
                 st.info("No students found")
             else:
-                st.dataframe(df, width='stretch')
+                st.dataframe(df, use_container_width=True)
                 download_options(df, filename_base="students", title="Students Report")
         except Exception:
             st.info("No student records yet or error loading data")
@@ -787,13 +787,75 @@ elif page == "Students":
 
     # Student Fees (view + pay)
     with tab_fees:
-        st.subheader("Student Fee Management")
         conn = get_db_connection()
+
+        # ────────────────────────────────────────────────
+        # NEW: Outstanding Fees Breakdown (Total → Class → Students)
+        # ────────────────────────────────────────────────
+        st.subheader("Outstanding Fees Breakdown")
+
+        # Total Outstanding (school-wide)
+        total_outstanding = conn.execute(
+            "SELECT COALESCE(SUM(balance_amount), 0) FROM invoices WHERE status IN ('Pending', 'Partially Paid')"
+        ).fetchone()[0]
+        st.metric("Total Outstanding Fees", f"USh {total_outstanding:,.0f}")
+
+        # Class-level breakdown
+        class_df = pd.read_sql("""
+            SELECT c.name as class_name, COALESCE(SUM(i.balance_amount), 0) as class_outstanding
+            FROM invoices i
+            JOIN students s ON i.student_id = s.id
+            JOIN classes c ON s.class_id = c.id
+            WHERE i.status IN ('Pending', 'Partially Paid')
+            GROUP BY c.name
+            ORDER BY class_outstanding DESC
+        """, conn)
+
+        if class_df.empty:
+            st.info("No outstanding fees at the moment.")
+        else:
+            st.dataframe(class_df, hide_index=True, use_container_width=True)
+            download_options(class_df, filename_base="outstanding_by_class", title="Outstanding Fees by Class")
+
+            # Drill-down: Select class to see students
+            selected_class = st.selectbox(
+                "Select Class to View Student Details",
+                [""] + class_df['class_name'].tolist(),
+                format_func=lambda x: "— Select a class —" if x == "" else x
+            )
+
+            if selected_class:
+                student_df = pd.read_sql("""
+                    SELECT s.name, COALESCE(SUM(i.balance_amount), 0) as outstanding
+                    FROM invoices i
+                    JOIN students s ON i.student_id = s.id
+                    JOIN classes c ON s.class_id = c.id
+                    WHERE c.name = ? AND i.status IN ('Pending', 'Partially Paid')
+                    GROUP BY s.id, s.name
+                    ORDER BY outstanding DESC
+                """, conn, params=(selected_class,))
+
+                if student_df.empty:
+                    st.info(f"No students with outstanding balances in {selected_class}")
+                else:
+                    st.subheader(f"Students with Outstanding Balances in {selected_class}")
+                    st.dataframe(student_df, hide_index=True, use_container_width=True)
+                    download_options(
+                        student_df,
+                        filename_base=f"outstanding_students_{selected_class.replace(' ', '_')}",
+                        title=f"Outstanding Students in {selected_class}"
+                    )
+
+        # ────────────────────────────────────────────────
+        # Existing Student Fee Management content continues below
+        # ────────────────────────────────────────────────
+        st.subheader("Student Fee Management")
         students = pd.read_sql("SELECT s.id, s.name, c.name as class_name FROM students s LEFT JOIN classes c ON s.class_id = c.id ORDER BY s.name", conn)
         if students.empty:
             st.info("No students available")
         else:
             selected = st.selectbox("Select Student", students.apply(lambda x: f"{x['name']} - {x['class_name']} (ID: {x['id']})", axis=1))
+            student_name = selected.split(" - ")[0]
             student_id = int(selected.split("(ID: ")[1].replace(")", ""))
             try:
                 invoices = pd.read_sql("SELECT * FROM invoices WHERE student_id = ? ORDER BY issue_date DESC", conn, params=(student_id,))
@@ -802,7 +864,7 @@ elif page == "Students":
             if invoices.empty:
                 st.info("No invoices for this student")
             else:
-                st.dataframe(invoices[['invoice_number','issue_date','due_date','total_amount','paid_amount','balance_amount','status']], width='stretch')
+                st.dataframe(invoices[['invoice_number','issue_date','due_date','total_amount','paid_amount','balance_amount','status']], use_container_width=True)
 
                 st.subheader("Payment History")
                 try:
@@ -810,8 +872,8 @@ elif page == "Students":
                     if payments.empty:
                         st.info("No payments recorded for this student")
                     else:
-                        st.dataframe(payments, width='stretch')
-                        download_options(payments, filename_base=f"payments_student_{student_id}", title=f"Payments for Student {student_id}")
+                        st.dataframe(payments, use_container_width=True)
+                        download_options(payments, filename_base=f"payments_student_{student_id}", title=f"Payments for {student_name}")
                 except Exception:
                     st.info("No payments or error loading payments")
 
@@ -909,7 +971,7 @@ elif page == "Uniforms":
         else:
             display_df = inventory_df.copy()
             display_df['unit_price'] = display_df['unit_price'].apply(lambda x: f"USh {x:,.0f}")
-            st.dataframe(display_df[['category','gender','is_shared','stock','unit_price']], width='stretch')
+            st.dataframe(display_df[['category','gender','is_shared','stock','unit_price']], use_container_width=True)
             total_stock = inventory_df['stock'].sum()
             total_value = (inventory_df['stock'] * inventory_df['unit_price']).sum()
             col1, col2 = st.columns(2)
@@ -1054,7 +1116,6 @@ elif page == "Uniforms":
 # Finances
 # ---------------------------
 elif page == "Finances":
-    # Restrict access: Accountant and Admin can record finances; Clerks can view
     user_role = st.session_state.user.get('role')
     st.header("Finances")
     tab_inc, tab_exp, tab_reports = st.tabs(["Record Income", "Record Expense", "View Transactions"])
@@ -1172,13 +1233,13 @@ elif page == "Finances":
         if df_inc.empty:
             st.info("No incomes recorded")
         else:
-            st.dataframe(df_inc, width='stretch')
+            st.dataframe(df_inc, use_container_width=True)
             download_options(df_inc, filename_base="recent_incomes", title="Recent Incomes")
         st.write("Recent Expenses")
         if df_exp.empty:
             st.info("No expenses recorded")
         else:
-            st.dataframe(df_exp, width='stretch')
+            st.dataframe(df_exp, use_container_width=True)
             download_options(df_exp, filename_base="recent_expenses", title="Recent Expenses")
         conn.close()
 
@@ -1204,9 +1265,9 @@ elif page == "Financial Report":
                         st.info("No transactions in this range")
                     else:
                         st.subheader("Incomes")
-                        st.dataframe(df_inc, width='stretch')
+                        st.dataframe(df_inc, use_container_width=True)
                         st.subheader("Expenses")
-                        st.dataframe(df_exp, width='stretch')
+                        st.dataframe(df_exp, use_container_width=True)
                         total_inc = df_inc['amount'].sum() if not df_inc.empty else 0
                         total_exp = df_exp['amount'].sum() if not df_exp.empty else 0
                         st.metric("Total Income", f"USh {total_inc:,.0f}")
@@ -1219,14 +1280,14 @@ elif page == "Financial Report":
                     if df.empty:
                         st.info("No data for selected category type")
                     else:
-                        st.dataframe(df, width='stretch')
+                        st.dataframe(df, use_container_width=True)
                         download_options(df, filename_base=f"by_category_{cat}", title=f"By Category - {cat}")
                 elif report_type == "Outstanding Invoices":
                     df = pd.read_sql("SELECT invoice_number, student_id, issue_date, due_date, total_amount, paid_amount, balance_amount, status FROM invoices WHERE status IN ('Pending','Partially Paid') ORDER BY due_date", conn)
                     if df.empty:
                         st.info("No outstanding invoices")
                     else:
-                        st.dataframe(df, width='stretch')
+                        st.dataframe(df, use_container_width=True)
                         download_options(df, filename_base="outstanding_invoices", title="Outstanding Invoices")
                 else:  # Student Payment Summary
                     students = pd.read_sql("SELECT id, name FROM students ORDER BY name", conn)
@@ -1241,20 +1302,20 @@ elif page == "Financial Report":
                         if df_inv.empty:
                             st.info("No invoices for this student")
                         else:
-                            st.dataframe(df_inv, width='stretch')
+                            st.dataframe(df_inv, use_container_width=True)
                             download_options(df_inv, filename_base=f"student_{sid}_invoices", title=f"Invoices for Student {sid}")
                         st.subheader("Payments")
                         if df_pay.empty:
                             st.info("No payments for this student")
                         else:
-                            st.dataframe(df_pay, width='stretch')
+                            st.dataframe(df_pay, use_container_width=True)
                             download_options(df_pay, filename_base=f"student_{sid}_payments", title=f"Payments for Student {sid}")
             except Exception as e:
                 st.error(f"Error generating report: {e}")
     conn.close()
 
 # ---------------------------
-# Cashbook (combined incomes & expenses with running balance)
+# Cashbook
 # ---------------------------
 elif page == "Cashbook":
     require_role(["Admin", "Accountant", "Clerk"])
@@ -1278,7 +1339,7 @@ elif page == "Cashbook":
                 combined['running_balance'] = combined['amount_signed'].cumsum()
                 display = combined[['tx_date','type','description','amount','running_balance']].copy()
                 display['tx_date'] = display['tx_date'].dt.date
-                st.dataframe(display, width='stretch')
+                st.dataframe(display, use_container_width=True)
                 download_options(display, filename_base=f"cashbook_{start_date}_{end_date}", title="Cashbook")
         except Exception as e:
             st.error(f"Error loading cashbook: {e}")
@@ -1296,7 +1357,7 @@ elif page == "Audit Log":
         if df_audit.empty:
             st.info("No audit entries")
         else:
-            st.dataframe(df_audit, width='stretch')
+            st.dataframe(df_audit, use_container_width=True)
             download_options(df_audit, filename_base="audit_log", title="Audit Log")
     except Exception as e:
         st.error(f"Error loading audit log: {e}")
@@ -1372,18 +1433,22 @@ elif page == "Fee Management":
             notes = st.text_area("Notes")
             if st.button("Create Invoice"):
                 try:
-                    inv_no = generate_invoice_number()
-                    total_amount = float(fee_row['total_fee'])
                     cur = conn.cursor()
-                    # Create invoice with balance = total_amount
-                    cur.execute("""
-                        INSERT INTO invoices (invoice_number, student_id, issue_date, due_date, academic_year, term, total_amount, paid_amount, balance_amount, status, notes, created_by)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'Pending', ?, ?)
-                    """, (inv_no, student_id, issue_date.isoformat(), due_date.isoformat(), fee_row['academic_year'], fee_row['term'], total_amount, total_amount, notes, st.session_state.user['username']))
-                    conn.commit()
-                    st.success(f"Invoice {inv_no} created for USh {total_amount:,.0f}")
-                    log_action("create_invoice", f"Invoice {inv_no} for student {student_id} amount {total_amount}", st.session_state.user['username'])
-                    safe_rerun()
+                    existing_invoice = cur.execute("SELECT id FROM invoices WHERE student_id = ? AND term = ? AND academic_year = ?", (student_id, fee_row['term'], fee_row['academic_year'])).fetchone()
+                    if existing_invoice:
+                        st.error("An invoice for this student, term, and academic year already exists. Cannot create duplicate.")
+                    else:
+                        inv_no = generate_invoice_number()
+                        total_amount = float(fee_row['total_fee'])
+                        # Create invoice with balance = total_amount
+                        cur.execute("""
+                            INSERT INTO invoices (invoice_number, student_id, issue_date, due_date, academic_year, term, total_amount, paid_amount, balance_amount, status, notes, created_by)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'Pending', ?, ?)
+                        """, (inv_no, student_id, issue_date.isoformat(), due_date.isoformat(), fee_row['academic_year'], fee_row['term'], total_amount, total_amount, notes, st.session_state.user['username']))
+                        conn.commit()
+                        st.success(f"Invoice {inv_no} created for USh {total_amount:,.0f}")
+                        log_action("create_invoice", f"Invoice {inv_no} for student {student_id} amount {total_amount}", st.session_state.user['username'])
+                        safe_rerun()
                 except Exception as e:
                     st.error(f"Error creating invoice: {e}")
     conn.close()
