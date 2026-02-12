@@ -1432,7 +1432,9 @@ elif page == "Audit Log":
         st.error(f"Error loading audit log: {e}")
     conn.close()
 
-# ---------------------------# Fee Management - FULL IMPLEMENTATION
+# ---------------------------
+# Fee Management - FULL IMPLEMENTATION
+# ---------------------------
 elif page == "Fee Management":
     require_role(["Admin", "Accountant"])
     st.header("Fee Management")
@@ -1486,20 +1488,20 @@ elif page == "Fee Management":
 
     st.subheader("Define Fee Structure")
     classes = pd.read_sql("SELECT id, name FROM classes ORDER BY name", conn)
-    active_terms = pd.read_sql(
-        "SELECT id, term, academic_year FROM academic_terms WHERE date('now') <= end_date "
-        "ORDER BY academic_year DESC, term", conn
+    terms_df = pd.read_sql(
+        "SELECT id, term, academic_year FROM academic_terms "
+        "ORDER BY academic_year DESC, term DESC", conn
     )
 
     if classes.empty:
         st.info("No classes found. Add some in Students → Manage Classes.")
-    elif active_terms.empty:
-        st.info("No active terms. Create one above.")
+    elif terms_df.empty:
+        st.info("No academic terms configured. Please add a term first.")
     else:
         with st.form("fee_structure_form"):
             term_str = st.selectbox(
                 "Select Term",
-                active_terms.apply(lambda r: f"{r['term']} {r['academic_year']} (ID:{r['id']})", axis=1)
+                terms_df.apply(lambda r: f"{r['term']} {r['academic_year']} (ID:{r['id']})", axis=1)
             )
             term_id = int(term_str.split("ID:")[1][:-1])
 
@@ -1566,11 +1568,11 @@ elif page == "Fee Management":
     else:
         selected_student = st.selectbox("Select Student", students.apply(lambda x: f"{x['name']} - {x['class_name']} (ID: {x['id']})", axis=1))
         student_id = int(selected_student.split("(ID: ")[1].replace(")", ""))
-        active_terms = pd.read_sql("SELECT id, term, academic_year FROM academic_terms WHERE date('now') <= end_date", conn)
-        if active_terms.empty:
-            st.warning("No active term available for new invoices.")
+        terms_df = pd.read_sql("SELECT id, term, academic_year FROM academic_terms ORDER BY academic_year DESC, term DESC", conn)
+        if terms_df.empty:
+            st.info("No academic terms configured. Please add a term first.")
         else:
-            term_choice = st.selectbox("Select Term for Invoice", active_terms.apply(lambda x: f"{x['term']} {x['academic_year']} (ID: {x['id']})", axis=1))
+            term_choice = st.selectbox("Select Term for Invoice", terms_df.apply(lambda x: f"{x['term']} {x['academic_year']} (ID: {x['id']})", axis=1))
             selected_term_id = int(term_choice.split("(ID: ")[1].replace(")", ""))
             fee_struct = pd.read_sql("""
                 SELECT fs.total_fee 
@@ -1603,4 +1605,3 @@ elif page == "Fee Management":
                     except Exception as e:
                         st.error(f"Error creating invoice: {e}")
     conn.close()
-           
