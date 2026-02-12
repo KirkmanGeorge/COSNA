@@ -1,10 +1,27 @@
-# cosna_school_app.py
+# cosna_school_management_full.py
+"""
+COSNA School Management System
+Improved full application implementing:
+- Logo on login, sidebar, and embedded in exported PDFs (landscape)
+- Per-student statements and payment UI in Fee Management (atomic transactions)
+- PDF + Excel download options everywhere (PDFs are landscape to avoid column collisions)
+- Duplicate / near-duplicate detection for students, classes, uniform categories
+- Inventory transactional integrity (atomic stock updates + checks)
+- Audit log and simple audit viewer
+- Role-based access (Admin, Accountant, Clerk) with simple enforcement
+- Cashbook (combined incomes/expenses running balance) view
+- Robust DB initialization and safe migrations
+Notes:
+- Save the school badge image as "school_badge.png" in the app folder or upload it on the login page.
+- This single-file app is intended to replace the previous script. Back up your DB before running.
+"""
+
 import streamlit as st
 import sqlite3
 import pandas as pd
 from datetime import datetime, date
 from io import BytesIO
-from reportlab.lib.pagesizes import letter
+from reportlab.lib.pagesizes import letter, landscape
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 import random
@@ -15,15 +32,16 @@ import os
 import traceback
 
 # ---------------------------
-# App configuration
+# Configuration
 # ---------------------------
 APP_TITLE = "COSNA School Management System"
 DB_PATH = "cosna_school.db"
 REGISTRATION_FEE = 50000.0
-SIMILARITY_THRESHOLD = 0.82  # fuzzy match threshold for near-duplicates
-LOGO_FILENAME = "school_badge.png"  # saved logo filename in app folder (optional upload)
+SIMILARITY_THRESHOLD = 0.82
+LOGO_FILENAME = "school_badge.png"  # place uploaded badge here
+PAGE_LAYOUT = "wide"
 
-st.set_page_config(page_title=APP_TITLE, layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title=APP_TITLE, layout=PAGE_LAYOUT, initial_sidebar_state="expanded")
 st.title(APP_TITLE)
 st.markdown("Students • Uniforms • Finances • Reports")
 
@@ -60,7 +78,7 @@ def hash_password(password: str, salt: str = None):
 
 def verify_password(stored: str, provided: str):
     try:
-        salt, hashed = stored.split('$', 1)
+        salt, _ = stored.split('$', 1)
     except Exception:
         return False
     return hash_password(provided, salt) == stored
@@ -75,7 +93,7 @@ def generate_invoice_number(): return generate_code("INV")
 def generate_voucher_number(): return generate_code("VCH")
 
 # ---------------------------
-# DB helpers for migrations
+# DB migration helpers
 # ---------------------------
 def table_has_column(conn, table_name, column_name):
     cur = conn.cursor()
@@ -95,18 +113,19 @@ def safe_alter_add_column(conn, table, column_def):
     return False
 
 # ---------------------------
-# Initialize database & migrations
+# Initialize DB and seed
 # ---------------------------
 def initialize_database():
     conn = get_db_connection()
     cursor = conn.cursor()
 
+    # Core tables
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE,
             password_hash TEXT,
-            role TEXT DEFAULT 'Staff',
+            role TEXT DEFAULT 'Clerk',
             full_name TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
@@ -120,7 +139,7 @@ def initialize_database():
         )
     ''')
 
-    cursor.execute('''CREATE TABLE IF NOT EXISTS classes (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
+    cursor.execute('CREATE TABLE IF NOT EXISTS classes (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)')
 
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS students (
@@ -264,7 +283,7 @@ def initialize_database():
 
     conn.commit()
 
-    # safe migrations
+    # Safe migrations (add columns if missing)
     safe_alter_add_column(conn, "incomes", "created_by TEXT")
     safe_alter_add_column(conn, "incomes", "received_by TEXT")
     safe_alter_add_column(conn, "incomes", "description TEXT")
@@ -278,7 +297,7 @@ def initialize_database():
     safe_alter_add_column(conn, "invoices", "created_by TEXT")
     safe_alter_add_column(conn, "payments", "created_by TEXT")
 
-    # backfill normalized fields and ensure uniforms rows
+    # Backfill normalized fields
     try:
         rows = conn.execute("SELECT id, category, normalized_category FROM uniform_categories").fetchall()
         for r in rows:
@@ -297,6 +316,7 @@ def initialize_database():
     except Exception:
         pass
 
+    # Ensure uniforms rows exist for categories
     try:
         rows = conn.execute("SELECT id FROM uniform_categories").fetchall()
         for r in rows:
@@ -308,7 +328,7 @@ def initialize_database():
     except Exception:
         pass
 
-    # seed admin user
+    # Seed default admin user if none exists
     try:
         cur = conn.execute("SELECT COUNT(*) as cnt FROM users")
         if cur.fetchone()["cnt"] == 0:
@@ -320,7 +340,7 @@ def initialize_database():
     except Exception:
         pass
 
-    # seed uniform categories and expense categories
+    # Seed uniform categories and expense categories
     uniform_seeds = [
         ('Boys Main Shorts', 'boys', 0),
         ('Button Shirts Main', 'shared', 1),
@@ -368,16 +388,8 @@ def initialize_database():
 initialize_database()
 
 # ---------------------------
-# Authentication & session
+# Audit logging
 # ---------------------------
-def get_user(username):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE username = ?", (username,))
-    row = cur.fetchone()
-    conn.close()
-    return row
-
 def log_action(action, details="", performed_by="system"):
     try:
         conn = get_db_connection()
@@ -388,12 +400,26 @@ def log_action(action, details="", performed_by="system"):
     except Exception:
         pass
 
+# ---------------------------
+# Authentication
+# ---------------------------
+def get_user(username):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE username = ?", (username,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
 if 'user' not in st.session_state:
     st.session_state.user = None
 
 # ---------------------------
-# Logo upload & handling
+# Logo handling
 # ---------------------------
+def logo_exists():
+    return os.path.exists(LOGO_FILENAME)
+
 def save_uploaded_logo(uploaded_file):
     try:
         with open(LOGO_FILENAME, "wb") as f:
@@ -402,14 +428,96 @@ def save_uploaded_logo(uploaded_file):
     except Exception:
         return False
 
-def logo_exists():
-    return os.path.exists(LOGO_FILENAME)
+# ---------------------------
+# Export helpers (Excel & PDF landscape)
+# ---------------------------
+def df_to_excel_bytes(df: pd.DataFrame, sheet_name="Sheet1"):
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+        df.to_excel(writer, sheet_name=sheet_name, index=False)
+    buf.seek(0)
+    return buf
+
+def dataframe_to_pdf_bytes_landscape(df: pd.DataFrame, title="Report", logo_path=None):
+    buf = BytesIO()
+    c = canvas.Canvas(buf, pagesize=landscape(letter))
+    width, height = landscape(letter)
+
+    # Draw logo if available
+    y_top = height - 30
+    title_x = 40
+    if logo_path and os.path.exists(logo_path):
+        try:
+            img = ImageReader(logo_path)
+            img_w, img_h = img.getSize()
+            max_w = 100
+            scale = min(max_w / img_w, 1.0)
+            draw_w = img_w * scale
+            draw_h = img_h * scale
+            c.drawImage(img, 40, y_top - draw_h, width=draw_w, height=draw_h, mask='auto')
+            title_x = 40 + draw_w + 10
+        except Exception:
+            title_x = 40
+
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(title_x, y_top, title)
+    c.setFont("Helvetica", 9)
+    y = y_top - 30
+
+    cols = list(df.columns)
+    # compute column widths to avoid collisions
+    usable_width = width - 80
+    col_width = max(80, usable_width / max(1, len(cols)))
+    # Header
+    for i, col in enumerate(cols):
+        c.drawString(40 + i * col_width, y, str(col))
+    y -= 14
+    # Rows
+    for _, row in df.iterrows():
+        if y < 40:
+            c.showPage()
+            y = height - 40
+        for i, col in enumerate(cols):
+            text = str(row[col])
+            if len(text) > 120:
+                text = text[:117] + "..."
+            c.drawString(40 + i * col_width, y, text)
+        y -= 12
+
+    # Footer with generation info
+    c.setFont("Helvetica", 8)
+    c.drawString(40, 20, f"Generated: {datetime.now().isoformat()}  •  {APP_TITLE}")
+    c.showPage()
+    c.save()
+    buf.seek(0)
+    return buf
+
+def download_options(df: pd.DataFrame, filename_base="report", title="Report"):
+    col1, col2 = st.columns([1,1])
+    with col1:
+        excel_buf = df_to_excel_bytes(df)
+        st.download_button("Download Excel", excel_buf, f"{filename_base}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    with col2:
+        pdf_buf = dataframe_to_pdf_bytes_landscape(df, title=title, logo_path=LOGO_FILENAME if logo_exists() else None)
+        st.download_button("Download PDF (Landscape)", pdf_buf, f"{filename_base}.pdf", "application/pdf")
+
+# ---------------------------
+# Role-based access helper
+# ---------------------------
+def require_role(allowed_roles):
+    user = st.session_state.get('user')
+    if not user:
+        st.error("Not logged in")
+        st.stop()
+    if user.get('role') not in allowed_roles:
+        st.error("You do not have permission to access this section")
+        st.stop()
 
 # ---------------------------
 # Login page (isolated)
 # ---------------------------
 def show_login_page():
-    st.markdown("### Please log in to continue")
+    st.markdown("### Login")
     col1, col2 = st.columns([1,2])
     with col1:
         if logo_exists():
@@ -436,21 +544,22 @@ def show_login_page():
                         st.session_state.user = {
                             "id": user["id"],
                             "username": user["username"],
-                            "role": user["role"] if user["role"] is not None else "Staff",
-                            "full_name": user["full_name"] if user["full_name"] is not None else user["username"]
+                            "role": user["role"] if user["role"] else "Clerk",
+                            "full_name": user["full_name"] if user["full_name"] else user["username"]
                         }
                         log_action("login", f"user {username} logged in", username)
-                        st.rerun()
+                        # safe rerun
+                        st.experimental_rerun()
                     else:
                         st.error("Invalid credentials")
 
-# If not logged in, show only login page and stop further rendering
+# If not logged in, show only login page
 if not st.session_state.user:
     show_login_page()
     st.stop()
 
 # ---------------------------
-# Sidebar (only after login)
+# Sidebar after login
 # ---------------------------
 with st.sidebar:
     if logo_exists():
@@ -460,82 +569,17 @@ with st.sidebar:
             pass
     user_safe = st.session_state.get('user') or {}
     st.markdown(f"**User:** {user_safe.get('full_name') or user_safe.get('username')}")
-    st.markdown(f"**Role:** {user_safe.get('role') or 'Staff'}")
+    st.markdown(f"**Role:** {user_safe.get('role') or 'Clerk'}")
     if st.button("Logout"):
         uname = user_safe.get('username', 'unknown')
         log_action("logout", f"user {uname} logged out", uname)
         st.session_state.user = None
-        st.rerun()
-
-# ---------------------------
-# Export helpers (Excel & PDF with logo)
-# ---------------------------
-def df_to_excel_bytes(df: pd.DataFrame, sheet_name="Sheet1"):
-    buf = BytesIO()
-    with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-        df.to_excel(writer, sheet_name=sheet_name, index=False)
-    buf.seek(0)
-    return buf
-
-def dataframe_to_pdf_bytes(df: pd.DataFrame, title="Report", logo_path=None):
-    buf = BytesIO()
-    c = canvas.Canvas(buf, pagesize=letter)
-    width, height = letter
-
-    y_top = height - 40
-    title_x = 40
-    if logo_path and os.path.exists(logo_path):
-        try:
-            img = ImageReader(logo_path)
-            img_w, img_h = img.getSize()
-            max_w = 80
-            scale = min(max_w / img_w, 1.0)
-            draw_w = img_w * scale
-            draw_h = img_h * scale
-            c.drawImage(img, 40, y_top - draw_h, width=draw_w, height=draw_h, mask='auto')
-            title_x = 40 + draw_w + 10
-        except Exception:
-            title_x = 40
-
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(title_x, y_top, title)
-    c.setFont("Helvetica", 10)
-    y = y_top - 30
-
-    cols = list(df.columns)
-    col_width = max(60, (width - 80) / max(1, len(cols)))
-    for i, col in enumerate(cols):
-        c.drawString(40 + i * col_width, y, str(col))
-    y -= 14
-    for _, row in df.iterrows():
-        if y < 40:
-            c.showPage()
-            y = height - 40
-        for i, col in enumerate(cols):
-            text = str(row[col])
-            if len(text) > 60:
-                text = text[:57] + "..."
-            c.drawString(40 + i * col_width, y, text)
-        y -= 12
-
-    c.showPage()
-    c.save()
-    buf.seek(0)
-    return buf
-
-def download_options(df: pd.DataFrame, filename_base="report", title="Report"):
-    col1, col2 = st.columns(2)
-    with col1:
-        excel_buf = df_to_excel_bytes(df)
-        st.download_button("Download Excel", excel_buf, f"{filename_base}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    with col2:
-        pdf_buf = dataframe_to_pdf_bytes(df, title=title, logo_path=LOGO_FILENAME if logo_exists() else None)
-        st.download_button("Download PDF", pdf_buf, f"{filename_base}.pdf", "application/pdf")
+        st.experimental_rerun()
 
 # ---------------------------
 # Main navigation
 # ---------------------------
-page = st.sidebar.radio("Menu", ["Dashboard", "Students", "Uniforms", "Finances", "Financial Report", "Fee Management"])
+page = st.sidebar.radio("Menu", ["Dashboard", "Students", "Uniforms", "Finances", "Financial Report", "Fee Management", "Cashbook", "Audit Log"])
 
 # ---------------------------
 # Dashboard
@@ -707,12 +751,13 @@ elif page == "Students":
                         student_id = cur.lastrowid
                         if student_type == "New":
                             try:
+                                cat_row = conn.execute("SELECT id FROM expense_categories WHERE name = 'Registration Fees'").fetchone()
+                                cat_id = cat_row["id"] if cat_row else None
                                 cur.execute("""
                                     INSERT INTO incomes (date, receipt_number, amount, source, category_id, description, payment_method, payer, received_by, created_by)
                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 """, (enroll_date.isoformat(), generate_receipt_number(), REGISTRATION_FEE, "Registration Fees",
-                                      (conn.execute("SELECT id FROM expense_categories WHERE name = 'Registration Fees'").fetchone() or [None])[0],
-                                      f"Registration fee for {name}", "Cash", name, st.session_state.user['username'], st.session_state.user['username']))
+                                      cat_id, f"Registration fee for {name}", "Cash", name, st.session_state.user['username'], st.session_state.user['username']))
                             except Exception:
                                 cur.execute("INSERT INTO incomes (date, amount, source, created_by) VALUES (?, ?, ?, ?)",
                                             (enroll_date.isoformat(), REGISTRATION_FEE, f"Registration fee for {name}", st.session_state.user['username']))
@@ -723,7 +768,7 @@ elif page == "Students":
                         st.error(f"Error adding student: {e}")
         conn.close()
 
-    # Student Fees
+    # Student Fees (view + pay)
     with tab_fees:
         st.subheader("Student Fee Management")
         conn = get_db_connection()
@@ -778,30 +823,50 @@ elif page == "Students":
                             st.error("Amount exceeds invoice balance")
                         else:
                             try:
+                                # Atomic transaction: update invoice, insert payment, insert income
                                 cur = conn.cursor()
-                                new_paid = (inv_row['paid_amount'] or 0) + pay_amount
-                                new_balance = (inv_row['balance_amount'] if inv_row['balance_amount'] is not None else inv_row['total_amount']) - pay_amount
-                                new_status = 'Fully Paid' if new_balance <= 0 else 'Partially Paid'
-                                cur.execute("UPDATE invoices SET paid_amount = ?, balance_amount = ?, status = ? WHERE id = ?", (new_paid, new_balance, new_status, inv_id))
-                                cur.execute("""
-                                    INSERT INTO payments (invoice_id, receipt_number, payment_date, amount, payment_method, reference_number, received_by, notes, created_by)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                """, (inv_id, pay_receipt, pay_date.isoformat(), pay_amount, pay_method, pay_ref, st.session_state.user['username'], pay_notes, st.session_state.user['username']))
-                                try:
-                                    cur.execute("""
-                                        INSERT INTO incomes (date, receipt_number, amount, source, category_id, payment_method, payer, received_by, created_by)
-                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                    """, (pay_date.isoformat(), pay_receipt, pay_amount, "Tuition Fees",
-                                          (conn.execute("SELECT id FROM expense_categories WHERE name = 'Tuition Fees'").fetchone() or [None])[0],
-                                          pay_method, selected.split(" - ")[0], st.session_state.user['username'], st.session_state.user['username']))
-                                except Exception:
-                                    cur.execute("INSERT INTO incomes (date, amount, source, created_by) VALUES (?, ?, ?, ?)",
-                                                (pay_date.isoformat(), pay_amount, f"Tuition fee payment for invoice {chosen_inv}", st.session_state.user['username']))
-                                conn.commit()
-                                st.success("Payment recorded and invoice updated")
-                                log_action("pay_invoice", f"Payment {pay_amount} for invoice {chosen_inv}", st.session_state.user['username'])
-                                st.rerun()
+                                conn.isolation_level = None
+                                cur.execute("BEGIN")
+                                # Re-fetch invoice to avoid race
+                                cur.execute("SELECT paid_amount, balance_amount, total_amount FROM invoices WHERE id = ? FOR UPDATE", (inv_id,))
+                                inv_check = cur.execute("SELECT paid_amount, balance_amount, total_amount FROM invoices WHERE id = ?", (inv_id,)).fetchone()
+                                if not inv_check:
+                                    cur.execute("ROLLBACK")
+                                    st.error("Invoice not found")
+                                else:
+                                    current_balance = inv_check[1] if inv_check[1] is not None else inv_check[2]
+                                    if pay_amount > current_balance + 0.0001:
+                                        cur.execute("ROLLBACK")
+                                        st.error("Payment exceeds current balance (it may have changed). Refresh and try again.")
+                                    else:
+                                        new_paid = (inv_check[0] or 0) + pay_amount
+                                        new_balance = current_balance - pay_amount
+                                        new_status = 'Fully Paid' if new_balance <= 0 else 'Partially Paid'
+                                        cur.execute("UPDATE invoices SET paid_amount = ?, balance_amount = ?, status = ? WHERE id = ?", (new_paid, new_balance, new_status, inv_id))
+                                        cur.execute("""
+                                            INSERT INTO payments (invoice_id, receipt_number, payment_date, amount, payment_method, reference_number, received_by, notes, created_by)
+                                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        """, (inv_id, pay_receipt, pay_date.isoformat(), pay_amount, pay_method, pay_ref, st.session_state.user['username'], pay_notes, st.session_state.user['username']))
+                                        # Insert income record
+                                        try:
+                                            cat_row = conn.execute("SELECT id FROM expense_categories WHERE name = 'Tuition Fees'").fetchone()
+                                            cat_id = cat_row["id"] if cat_row else None
+                                            cur.execute("""
+                                                INSERT INTO incomes (date, receipt_number, amount, source, category_id, payment_method, payer, received_by, created_by)
+                                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                            """, (pay_date.isoformat(), pay_receipt, pay_amount, "Tuition Fees", cat_id, pay_method, selected.split(" - ")[0], st.session_state.user['username'], st.session_state.user['username']))
+                                        except Exception:
+                                            cur.execute("INSERT INTO incomes (date, amount, source, created_by) VALUES (?, ?, ?, ?)",
+                                                        (pay_date.isoformat(), pay_amount, f"Tuition fee payment for invoice {chosen_inv}", st.session_state.user['username']))
+                                        cur.execute("COMMIT")
+                                        st.success("Payment recorded and invoice updated")
+                                        log_action("pay_invoice", f"Payment {pay_amount} for invoice {chosen_inv}", st.session_state.user['username'])
+                                        st.experimental_rerun()
                             except Exception as e:
+                                try:
+                                    cur.execute("ROLLBACK")
+                                except Exception:
+                                    pass
                                 st.error(f"Error recording payment: {e}")
         conn.close()
 
@@ -810,20 +875,17 @@ elif page == "Students":
 # ---------------------------
 elif page == "Uniforms":
     st.header("Uniforms – Inventory & Sales")
+    conn = get_db_connection()
 
     def get_inventory_df():
-        conn = get_db_connection()
-        df = pd.read_sql_query("""
+        return pd.read_sql_query("""
             SELECT uc.id as cat_id, uc.category, uc.gender, uc.is_shared, u.stock, u.unit_price
             FROM uniforms u JOIN uniform_categories uc ON u.category_id = uc.id
             ORDER BY uc.gender, uc.category
         """, conn)
-        conn.close()
-        return df
 
     tab_view, tab_update, tab_sale, tab_manage = st.tabs(["View Inventory", "Update Stock/Price", "Record Sale", "Manage Categories"])
 
-    # View Inventory
     with tab_view:
         inventory_df = get_inventory_df()
         if inventory_df.empty:
@@ -839,10 +901,8 @@ elif page == "Uniforms":
             col2.metric("Total Inventory Value", f"USh {total_value:,.0f}")
             download_options(inventory_df, filename_base="uniform_inventory", title="Uniform Inventory Report")
 
-    # Update Stock & Price
     with tab_update:
         st.subheader("Update Stock & Price")
-        conn = get_db_connection()
         categories_df = pd.read_sql("SELECT uc.id, uc.category, u.stock, u.unit_price FROM uniform_categories uc JOIN uniforms u ON uc.id = u.category_id ORDER BY uc.category", conn)
         if categories_df.empty:
             st.info("No uniform categories available. Add categories in Manage Categories tab.")
@@ -869,19 +929,16 @@ elif page == "Uniforms":
                     cur.execute("COMMIT")
                     st.success("Inventory updated")
                     log_action("update_uniform", f"Updated category {selected_category}: stock={final_stock}, price={new_price}", st.session_state.user['username'])
-                    st.rerun()
+                    st.experimental_rerun()
                 except Exception as e:
                     try:
                         cur.execute("ROLLBACK")
                     except Exception:
                         pass
                     st.error(f"Error updating inventory: {e}")
-        conn.close()
 
-    # Record Sale
     with tab_sale:
         st.subheader("Record Uniform Sale")
-        conn = get_db_connection()
         inv_df = pd.read_sql("""
             SELECT uc.id as cat_id, uc.category, u.stock, u.unit_price
             FROM uniform_categories uc JOIN uniforms u ON uc.id = u.category_id
@@ -920,31 +977,28 @@ elif page == "Uniforms":
                             cur.execute("UPDATE uniforms SET stock = ? WHERE category_id = ?", (new_stock, cat_id))
                             amount = qty * unit_price
                             try:
+                                cat_row = conn.execute("SELECT id FROM expense_categories WHERE name = 'Uniform Sales'").fetchone()
+                                cat_id_income = cat_row["id"] if cat_row else None
                                 cur.execute("""
                                     INSERT INTO incomes (date, receipt_number, amount, source, category_id, description, payment_method, payer, received_by, created_by)
                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                """, (date.today().isoformat(), receipt_no, amount, "Uniform Sales",
-                                      (conn.execute("SELECT id FROM expense_categories WHERE name = 'Uniform Sales'").fetchone() or [None])[0],
-                                      f"Sale of {qty} x {selected}", payment_method, buyer or "Walk-in", st.session_state.user['username'], st.session_state.user['username']))
+                                """, (date.today().isoformat(), receipt_no, amount, "Uniform Sales", cat_id_income, f"Sale of {qty} x {selected}", payment_method, buyer or "Walk-in", st.session_state.user['username'], st.session_state.user['username']))
                             except Exception:
                                 cur.execute("INSERT INTO incomes (date, amount, source, created_by) VALUES (?, ?, ?, ?)",
                                             (date.today().isoformat(), amount, f"Uniform sale {selected}", st.session_state.user['username']))
                             cur.execute("COMMIT")
                             st.success(f"Sale recorded. New stock: {new_stock}")
                             log_action("uniform_sale", f"Sold {qty} of {selected} for USh {amount}", st.session_state.user['username'])
-                            st.rerun()
+                            st.experimental_rerun()
                     except Exception as e:
                         try:
                             cur.execute("ROLLBACK")
                         except Exception:
                             pass
                         st.error(f"Error recording sale: {e}")
-        conn.close()
 
-    # Manage categories
     with tab_manage:
         st.subheader("Manage Uniform Categories")
-        conn = get_db_connection()
         with st.form("add_uniform_category"):
             cat_name = st.text_input("Category Name")
             gender = st.selectbox("Gender", ["boys","girls","shared"])
@@ -975,21 +1029,24 @@ elif page == "Uniforms":
                         conn.commit()
                         st.success("Uniform category added")
                         log_action("add_uniform_category", f"Added {cat_name} stock={initial_stock} price={unit_price}", st.session_state.user['username'])
-                        st.rerun()
+                        st.experimental_rerun()
                     except Exception as e:
                         st.error(f"Error adding category: {e}")
-        conn.close()
+    conn.close()
 
 # ---------------------------
 # Finances
 # ---------------------------
 elif page == "Finances":
+    # Restrict access: Accountant and Admin can record finances; Clerks can view
+    user_role = st.session_state.user.get('role')
     st.header("Finances")
     tab_inc, tab_exp, tab_reports = st.tabs(["Record Income", "Record Expense", "View Transactions"])
 
-    # Record Income
     with tab_inc:
         st.subheader("Record Income")
+        if user_role not in ("Admin", "Accountant"):
+            st.info("You do not have permission to record incomes. View-only access.")
         conn = get_db_connection()
         try:
             categories = pd.read_sql("SELECT id, name FROM expense_categories WHERE category_type = 'Income' ORDER BY name", conn)
@@ -1006,7 +1063,9 @@ elif page == "Finances":
             notes = st.text_area("Notes")
             submit_income = st.form_submit_button("Record Income")
         if submit_income:
-            if amount <= 0:
+            if user_role not in ("Admin", "Accountant"):
+                st.error("Permission denied")
+            elif amount <= 0:
                 st.error("Enter a positive amount")
             else:
                 try:
@@ -1029,9 +1088,10 @@ elif page == "Finances":
                     st.error(f"Error recording income: {e}")
         conn.close()
 
-    # Record Expense
     with tab_exp:
         st.subheader("Record Expense")
+        if user_role not in ("Admin", "Accountant"):
+            st.info("You do not have permission to record expenses. View-only access.")
         conn = get_db_connection()
         try:
             categories = pd.read_sql("SELECT id, name FROM expense_categories WHERE category_type = 'Expense' ORDER BY name", conn)
@@ -1048,7 +1108,9 @@ elif page == "Finances":
             approved_by = st.text_input("Approved By")
             submit_expense = st.form_submit_button("Record Expense")
         if submit_expense:
-            if amount <= 0:
+            if user_role not in ("Admin", "Accountant"):
+                st.error("Permission denied")
+            elif amount <= 0:
                 st.error("Enter a positive amount")
             else:
                 try:
@@ -1071,7 +1133,6 @@ elif page == "Finances":
                     st.error(f"Error recording expense: {e}")
         conn.close()
 
-    # View Transactions
     with tab_reports:
         st.subheader("Transactions")
         conn = get_db_connection()
@@ -1149,7 +1210,7 @@ elif page == "Financial Report":
                     else:
                         st.dataframe(df, width='stretch')
                         download_options(df, filename_base="outstanding_invoices", title="Outstanding Invoices")
-                else:
+                else:  # Student Payment Summary
                     students = pd.read_sql("SELECT id, name FROM students ORDER BY name", conn)
                     if students.empty:
                         st.info("No students available")
@@ -1175,9 +1236,59 @@ elif page == "Financial Report":
     conn.close()
 
 # ---------------------------
-# Fee Management
+# Cashbook (combined incomes & expenses with running balance)
+# ---------------------------
+elif page == "Cashbook":
+    require_role(["Admin", "Accountant", "Clerk"])
+    st.header("Cashbook (Running Balance)")
+    conn = get_db_connection()
+    start_date = st.date_input("Start Date", date.today().replace(day=1))
+    end_date = st.date_input("End Date", date.today())
+    if start_date > end_date:
+        st.error("Start date must be before end date")
+    else:
+        try:
+            df_inc = pd.read_sql("SELECT date as tx_date, amount, 'Income' as type, source as description FROM incomes WHERE date BETWEEN ? AND ?", conn, params=(start_date.isoformat(), end_date.isoformat()))
+            df_exp = pd.read_sql("SELECT date as tx_date, amount, 'Expense' as type, description FROM expenses WHERE date BETWEEN ? AND ?", conn, params=(start_date.isoformat(), end_date.isoformat()))
+            combined = pd.concat([df_inc, df_exp], sort=False).fillna('')
+            if combined.empty:
+                st.info("No transactions in this range")
+            else:
+                combined['tx_date'] = pd.to_datetime(combined['tx_date'])
+                combined = combined.sort_values('tx_date').reset_index(drop=True)
+                combined['amount_signed'] = combined.apply(lambda r: r['amount'] if r['type'] == 'Income' else -abs(r['amount']), axis=1)
+                combined['running_balance'] = combined['amount_signed'].cumsum()
+                display = combined[['tx_date','type','description','amount','running_balance']].copy()
+                display['tx_date'] = display['tx_date'].dt.date
+                st.dataframe(display, width='stretch')
+                download_options(display, filename_base=f"cashbook_{start_date}_{end_date}", title="Cashbook")
+        except Exception as e:
+            st.error(f"Error loading cashbook: {e}")
+    conn.close()
+
+# ---------------------------
+# Audit Log viewer
+# ---------------------------
+elif page == "Audit Log":
+    require_role(["Admin", "Accountant"])
+    st.header("Audit Log")
+    conn = get_db_connection()
+    try:
+        df_audit = pd.read_sql("SELECT performed_at, performed_by, action, details FROM audit_log ORDER BY performed_at DESC LIMIT 500", conn)
+        if df_audit.empty:
+            st.info("No audit entries")
+        else:
+            st.dataframe(df_audit, width='stretch')
+            download_options(df_audit, filename_base="audit_log", title="Audit Log")
+    except Exception as e:
+        st.error(f"Error loading audit log: {e}")
+    conn.close()
+
+# ---------------------------
+# Fee Management (detailed)
 # ---------------------------
 elif page == "Fee Management":
+    require_role(["Admin", "Accountant"])
     st.header("Fee Management")
     conn = get_db_connection()
     st.subheader("Define Fee Structure")
@@ -1221,6 +1332,7 @@ elif page == "Fee Management":
             except Exception as e:
                 st.error(f"Error saving fee structure: {e}")
 
+    # Generate invoice for a student
     st.subheader("Generate Invoice")
     students = pd.read_sql("SELECT s.id, s.name, c.name as class_name FROM students s LEFT JOIN classes c ON s.class_id = c.id ORDER BY s.name", conn)
     if students.empty:
@@ -1243,6 +1355,7 @@ elif page == "Fee Management":
                     inv_no = generate_invoice_number()
                     total_amount = float(fee_row['total_fee'])
                     cur = conn.cursor()
+                    # Create invoice with balance = total_amount
                     cur.execute("""
                         INSERT INTO invoices (invoice_number, student_id, issue_date, due_date, academic_year, term, total_amount, paid_amount, balance_amount, status, notes, created_by)
                         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'Pending', ?, ?)
