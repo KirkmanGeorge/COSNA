@@ -1444,7 +1444,7 @@ elif page == "Fee Management":
     with st.form("term_config_form"):
         col1, col2 = st.columns(2)
         with col1:
-                        academic_year = st.text_input("Academic Year (e.g., 2025/2026)", value=f"{date.today().year}/{date.today().year + 1}")
+            academic_year = st.text_input("Academic Year (e.g., 2025/2026)", value=f"{date.today().year}/{date.today().year + 1}")
             term = st.selectbox("Term", ["Term 1", "Term 2", "Term 3"])
         with col2:
             start_date = st.date_input("Start Date")
