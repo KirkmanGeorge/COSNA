@@ -326,6 +326,8 @@ def initialize_database():
     safe_alter_add_column(conn, "invoices", "created_by TEXT")
     safe_alter_add_column(conn, "payments", "created_by TEXT")
 
+    safe_alter_add_column(conn, "fee_structure", "term_id INTEGER")
+
     # Backfill normalized fields
     try:
         rows = conn.execute("SELECT id, category, normalized_category FROM uniform_categories").fetchall()
@@ -727,7 +729,7 @@ if page == "Dashboard":
 # ---------------------------
 elif page == "Students":
     st.header("Students")
-    tab_view, tab_add, tab_fees = st.tabs(["View & Export", "Add Student", "Student Fees"])
+    tab_view, tab_add, tab_fees, tab_classes = st.tabs(["View & Export", "Add Student", "Student Fees", "Manage Classes"])
 
     with tab_view:
         conn = get_db_connection()
@@ -976,8 +978,38 @@ elif page == "Students":
                                 st.error(f"Error recording payment: {e}")
         conn.close()
 
+    with tab_classes:
+        st.subheader("Manage Classes")
+        conn = get_db_connection()
+        with st.form("add_class_form"):
+            class_name = st.text_input("Class Name")
+            submit_class = st.form_submit_button("Add Class")
+        if submit_class:
+            if not class_name:
+                st.error("Enter class name")
+            else:
+                try:
+                    cur = conn.cursor()
+                    cur.execute("INSERT INTO classes (name) VALUES (?)", (class_name.strip(),))
+                    conn.commit()
+                    st.success("Class added successfully")
+                    log_action("add_class", f"Added class {class_name}", st.session_state.user['username'])
+                    safe_rerun()
+                except sqlite3.IntegrityError:
+                    st.error("Class name already exists")
+                except Exception as e:
+                    st.error(f"Error adding class: {e}")
+
+        st.subheader("Existing Classes")
+        classes_df = pd.read_sql("SELECT name FROM classes ORDER BY name", conn)
+        if classes_df.empty:
+            st.info("No classes added yet")
+        else:
+            st.dataframe(classes_df, use_container_width=True)
+        conn.close()
+
 # ---------------------------
-# Uniforms (unchanged - not term-sensitive)
+# Uniforms
 # ---------------------------
 elif page == "Uniforms":
     st.header("Uniforms – Inventory & Sales")
@@ -1284,7 +1316,7 @@ elif page == "Financial Report":
             try:
                 term_sql, term_p = get_term_filter()
                 if report_type == "Income vs Expense (date range)":
-                    df_inc = pd.read_sql(f"SELECT date, amount, source, payer FROM incomes WHERE date BETWEEN ? AND ?{term_sql} ORDER BY date", conn, params=(start_date.isoformat(), end_date.isoformat()) + term_p)
+                    df_inc = pd.read_sql(f"SELECT date, amount, source, payer FROM incomes WHERE date BETWEEN ? AND ?{term_sql} ORDER BY date", conn, params=[start_date.isoformat(), end_date.isoformat()] + term_p)
                     df_exp = pd.read_sql("SELECT date, amount, description, payee FROM expenses WHERE date BETWEEN ? AND ? ORDER BY date", conn, params=(start_date.isoformat(), end_date.isoformat()))
                     if df_inc.empty and df_exp.empty:
                         st.info("No transactions in this range")
@@ -1355,8 +1387,8 @@ elif page == "Cashbook":
     else:
         try:
             term_sql, term_p = get_term_filter()
-            df_inc = pd.read_sql(f"SELECT date as tx_date, amount, 'Income' as type, source as description FROM incomes WHERE date BETWEEN ? AND ?{term_sql}", conn, params=(start_date.isoformat(), end_date.isoformat()) + term_p)
-            df_exp = pd.read_sql("SELECT date as tx_date, amount, 'Expense' as type, description FROM expenses WHERE date BETWEEN ? AND ?", conn, params=(start_date.isoformat(), end_date.isoformat()))
+            df_inc = pd.read_sql(f"SELECT date as tx_date, amount, 'Income' as type, source as description FROM incomes WHERE date BETWEEN ? AND ?{term_sql}", conn, params=[start_date.isoformat(), end_date.isoformat()] + term_p)
+            df_exp = pd.read_sql("SELECT date as tx_date, amount, 'Expense' as type, description FROM expenses WHERE date BETWEEN ? AND ? ORDER BY date", conn, params=[start_date.isoformat(), end_date.isoformat()])
             combined = pd.concat([df_inc, df_exp], sort=False).fillna('')
             if combined.empty:
                 st.info("No transactions in this range")
@@ -1499,20 +1531,18 @@ elif page == "Fee Management":
         st.info("No students available")
     else:
         selected_student = st.selectbox("Select Student", students.apply(lambda x: f"{x['name']} - {x['class_name']} (ID: {x['id']})", axis=1))
-        student_id = int(selected_student.split("(ID: ")[1][:-1])
+        student_id = int(selected_student.split("(ID: ")[1].replace(")", ""))
         active_terms = pd.read_sql("SELECT id, term, academic_year FROM academic_terms WHERE date('now') <= end_date", conn)
         if active_terms.empty:
             st.warning("No active term available for new invoices.")
         else:
             term_choice = st.selectbox("Select Term for Invoice", active_terms.apply(lambda x: f"{x['term']} {x['academic_year']} (ID: {x['id']})", axis=1))
-            selected_term_id = int(term_choice.split("(ID: ")[1][:-1])
-
+            selected_term_id = int(term_choice.split("(ID: ")[1].replace(")", ""))
             fee_struct = pd.read_sql("""
                 SELECT fs.total_fee 
                 FROM fee_structure fs 
                 WHERE fs.term_id = ? AND fs.class_id = (SELECT class_id FROM students WHERE id = ?)
             """, conn, params=(selected_term_id, student_id))
-
             if fee_struct.empty:
                 st.error("No fee structure defined for this class and term.")
             else:
@@ -1523,10 +1553,7 @@ elif page == "Fee Management":
                 if st.button("Create Invoice"):
                     try:
                         cur = conn.cursor()
-                        existing = cur.execute(
-                            "SELECT id FROM invoices WHERE student_id = ? AND term_id = ?",
-                            (student_id, selected_term_id)
-                        ).fetchone()
+                        existing = cur.execute("SELECT id FROM invoices WHERE student_id = ? AND term_id = ?", (student_id, selected_term_id)).fetchone()
                         if existing:
                             st.error("Invoice already exists for this student and term.")
                         else:
@@ -1540,5 +1567,5 @@ elif page == "Fee Management":
                             log_action("create_invoice", f"Invoice {inv_no} for student {student_id} term {selected_term_id}", st.session_state.user['username'])
                             safe_rerun()
                     except Exception as e:
-                        st.error(f"Error: {e}")
+                        st.error(f"Error creating invoice: {e}")
     conn.close()
