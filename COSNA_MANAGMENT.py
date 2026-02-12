@@ -1435,10 +1435,8 @@ elif page == "Audit Log":
 # ---------------------------
 # Fee Management
 # ---------------------------
-
 elif page == "Fee Management":
     st.header("Fee Management")
-
     tab_terms, tab_structure, tab_invoices, tab_payments = st.tabs(
         ["Configure Academic Terms", "Configure Fee Structures", "Generate Invoices", "Record Payments"]
     )
@@ -1453,6 +1451,7 @@ elif page == "Fee Management":
             start_date = st.date_input("Start Date")
             end_date = st.date_input("End Date")
             submitted = st.form_submit_button("Add Term")
+            
             if submitted:
                 try:
                     conn.execute("""
@@ -1464,6 +1463,7 @@ elif page == "Fee Management":
                     log_action("add_term", f"{term} {year}", st.session_state.user['username'])
                 except Exception as e:
                     st.error(f"Error adding term: {e}")
+        
         df_terms = pd.read_sql("SELECT * FROM academic_terms ORDER BY academic_year DESC, term DESC", conn)
         st.dataframe(df_terms, use_container_width=True)
         download_options(df_terms, "academic_terms", "Academic Terms")
@@ -1475,29 +1475,28 @@ elif page == "Fee Management":
         conn = get_db_connection()
         classes = pd.read_sql("SELECT id, name FROM classes ORDER BY name", conn)
         terms = pd.read_sql("SELECT id, academic_year, term FROM academic_terms ORDER BY academic_year DESC", conn)
-
+        
         if classes.empty or terms.empty:
             st.warning("Please configure classes and academic terms first.")
         else:
             with st.form("fee_structure_form"):
                 term_opt = st.selectbox("Select Term", terms.apply(lambda r: f"{r['term']} {r['academic_year']} (ID:{r['id']})", axis=1))
                 class_opt = st.selectbox("Select Class", classes.apply(lambda r: f"{r['name']} (ID:{r['id']})", axis=1))
-
                 tuition = st.number_input("Tuition Fee", min_value=0.0, value=0.0)
                 uniform = st.number_input("Uniform Fee", min_value=0.0, value=0.0)
                 activity = st.number_input("Activity Fee", min_value=0.0, value=0.0)
                 exam = st.number_input("Exam Fee", min_value=0.0, value=0.0)
                 library = st.number_input("Library Fee", min_value=0.0, value=0.0)
                 other = st.number_input("Other Fee", min_value=0.0, value=0.0)
-
                 submitted = st.form_submit_button("Save Fee Structure")
+                
                 if submitted:
                     try:
                         term_id = int(term_opt.split("ID:")[1].replace(")", ""))
                         class_id = int(class_opt.split("ID:")[1].replace(")", ""))
                         total = tuition + uniform + activity + exam + library + other
                         conn.execute("""
-                            INSERT OR REPLACE INTO fee_structure 
+                            INSERT OR REPLACE INTO fee_structure
                             (term_id, class_id, tuition_fee, uniform_fee, activity_fee, exam_fee, library_fee, other_fee, total_fee)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """, (term_id, class_id, tuition, uniform, activity, exam, library, other, total))
@@ -1506,7 +1505,7 @@ elif page == "Fee Management":
                         log_action("fee_structure", f"Class {class_id}, Term {term_id}", st.session_state.user['username'])
                     except Exception as e:
                         st.error(f"Error saving fee structure: {e}")
-
+        
         df_struct = pd.read_sql("""
             SELECT fs.id, at.academic_year, at.term, c.name as class_name,
                    fs.tuition_fee, fs.uniform_fee, fs.activity_fee, fs.exam_fee,
@@ -1526,7 +1525,7 @@ elif page == "Fee Management":
         conn = get_db_connection()
         classes = pd.read_sql("SELECT id, name FROM classes ORDER BY name", conn)
         terms = pd.read_sql("SELECT id, academic_year, term FROM academic_terms ORDER BY academic_year DESC", conn)
-
+        
         if classes.empty or terms.empty:
             st.warning("Please configure classes and academic terms first.")
         else:
@@ -1534,11 +1533,13 @@ elif page == "Fee Management":
                 term_opt = st.selectbox("Select Term", terms.apply(lambda r: f"{r['term']} {r['academic_year']} (ID:{r['id']})", axis=1))
                 class_opt = st.selectbox("Select Class", classes.apply(lambda r: f"{r['name']} (ID:{r['id']})", axis=1))
                 submitted = st.form_submit_button("Generate Invoices")
+                
                 if submitted:
                     try:
                         term_id = int(term_opt.split("ID:")[1].replace(")", ""))
                         class_id = int(class_opt.split("ID:")[1].replace(")", ""))
                         fee_row = conn.execute("SELECT * FROM fee_structure WHERE term_id=? AND class_id=?", (term_id, class_id)).fetchone()
+                        
                         if not fee_row:
                             st.error("No fee structure found for this class and term.")
                         else:
@@ -1558,7 +1559,7 @@ elif page == "Fee Management":
                             log_action("generate_invoices", f"Class {class_id}, Term {term_id}", st.session_state.user['username'])
                     except Exception as e:
                         st.error(f"Error generating invoices: {e}")
-
+        
         df_inv = pd.read_sql("""
             SELECT i.invoice_number, s.name as student_name, c.name as class_name,
                    at.academic_year, at.term, i.total_amount, i.paid_amount, i.balance_amount, i.status
@@ -1584,7 +1585,7 @@ elif page == "Fee Management":
             WHERE i.status IN ('Pending','Partially Paid')
             ORDER BY c.name, s.name
         """, conn)
-
+        
         if invoices.empty:
             st.info("No pending invoices.")
         else:
@@ -1592,49 +1593,52 @@ elif page == "Fee Management":
                 inv_opt = st.selectbox("Select Invoice", invoices.apply(lambda r: f"{r['invoice_number']} - {r['student_name']} ({r['class_name']}) Balance: {r['balance_amount']}", axis=1))
                 amount = st.number_input("Payment Amount", min_value=0.0, value=0.0)
                 method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"])
-                                submitted = st.form_submit_button("Record Payment")
+                submitted = st.form_submit_button("Record Payment")
+                
                 if submitted:
                     try:
-                        inv_id = int(inv_opt.split()[0]) if inv_opt.startswith("ID:") else None
-                        # safer: parse invoice id from dataframe
+                        # Find the correct row from the dataframe
                         selected_row = invoices.iloc[invoices.apply(lambda r: f"{r['invoice_number']} - {r['student_name']} ({r['class_name']}) Balance: {r['balance_amount']}", axis=1).tolist().index(inv_opt)]
                         inv_id = selected_row["id"]
                         balance = selected_row["balance_amount"]
+                        
                         if amount <= 0 or amount > balance:
                             st.error("Invalid payment amount")
                         else:
                             # Update invoice
                             conn.execute("""
                                 UPDATE invoices
-                                SET paid_amount = paid_amount + ?, balance_amount = balance_amount - ?,
-                                    status = CASE 
+                                SET paid_amount = paid_amount + ?, 
+                                    balance_amount = balance_amount - ?,
+                                    status = CASE
                                         WHEN balance_amount - ? <= 0 THEN 'Fully Paid'
                                         ELSE 'Partially Paid'
                                     END
                                 WHERE id = ?
                             """, (amount, amount, amount, inv_id))
-
+                            
                             # Insert payment record
+                            receipt_no = generate_receipt_number()
                             conn.execute("""
                                 INSERT INTO payments (invoice_id, receipt_number, payment_date, amount, payment_method, received_by, created_by)
                                 VALUES (?, ?, ?, ?, ?, ?, ?)
-                            """, (inv_id, generate_receipt_number(), date.today().isoformat(), amount, method,
+                            """, (inv_id, receipt_no, date.today().isoformat(), amount, method,
                                   st.session_state.user['username'], st.session_state.user['username']))
-
-                            # Also insert into incomes for Cashbook/Dashboard
+                            
+                            # Insert into incomes for Cashbook/Dashboard
                             conn.execute("""
                                 INSERT INTO incomes (date, receipt_number, amount, source, description, payment_method, payer, received_by, created_by)
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """, (date.today().isoformat(), generate_receipt_number(), amount, "Student Fees",
+                            """, (date.today().isoformat(), receipt_no, amount, "Student Fees",
                                   f"Payment against invoice {selected_row['invoice_number']}", method,
                                   selected_row["student_name"], st.session_state.user['username'], st.session_state.user['username']))
-
+                            
                             conn.commit()
-                            st.success("Payment recorded successfully")
+                            st.success(f"Payment of {amount} recorded successfully. Receipt: {receipt_no}")
                             log_action("record_payment", f"Invoice {selected_row['invoice_number']} payment {amount}", st.session_state.user['username'])
                     except Exception as e:
                         st.error(f"Error recording payment: {e}")
-
+        
         df_pay = pd.read_sql("""
             SELECT p.receipt_number, p.payment_date, p.amount, p.payment_method,
                    s.name as student_name, c.name as class_name, i.invoice_number
@@ -1644,11 +1648,9 @@ elif page == "Fee Management":
             JOIN classes c ON s.class_id = c.id
             ORDER BY p.payment_date DESC
         """, conn)
-        if df_pay.empty:
-            st.info("No payments recorded yet.")
-        else:
+        
+        if not df_pay.empty:
             st.dataframe(df_pay, use_container_width=True)
             download_options(df_pay, "payments", "Payments Report")
+        
         conn.close()
-
-
