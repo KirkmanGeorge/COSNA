@@ -1241,7 +1241,7 @@ elif page == "Finances":
             voucher_no = st.text_input("Voucher Number", value=generate_voucher_number())
             amount = st.number_input("Amount (USh)", min_value=0.0, step=100.0)
             category = st.selectbox("Category", ["-- Select --"] + categories["name"].tolist())
-            payment_method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"])
+            payment_method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque")
             payee = st.text_input("Payee")
             description = st.text_area("Description")
             approved_by = st.text_input("Approved By")
@@ -1444,7 +1444,7 @@ elif page == "Fee Management":
     with st.form("term_config_form"):
         col1, col2 = st.columns(2)
         with col1:
-            academic_year = st.text_input("Academic Year (e.g., 2025/2026)", value=f"{date.today().year}/{date.today().year + 1}")
+                        academic_year = st.text_input("Academic Year (e.g., 2025/2026)", value=f"{date.today().year}/{date.today().year + 1}")
             term = st.selectbox("Term", ["Term 1", "Term 2", "Term 3"])
         with col2:
             start_date = st.date_input("Start Date")
@@ -1591,3 +1591,4 @@ elif page == "Fee Management":
                     except Exception as e:
                         st.error(f"Error creating invoice: {e}")
     conn.close()
+           
