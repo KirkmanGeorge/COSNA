@@ -728,6 +728,37 @@ elif page == "Students":
     with tab_add:
         st.subheader("Add Student")
         conn = get_db_connection()
+
+        # ──────────────────────────────
+        # Add new class (quick inline)
+        # ──────────────────────────────
+        with st.expander("➕ Add a new class (if not in list)", expanded=False):
+            new_class_name = st.text_input("New Class Name", key="new_class_input", placeholder="e.g. P.4, S.1 Gold, Baby")
+            if st.button("Create Class", key="create_class_btn", use_container_width=True):
+                if not new_class_name.strip():
+                    st.error("Enter class name")
+                else:
+                    try:
+                        # Very basic duplicate check
+                        exists = conn.execute(
+                            "SELECT 1 FROM classes WHERE LOWER(name) = LOWER(?)",
+                            (new_class_name.strip(),)
+                        ).fetchone()
+                        if exists:
+                            st.error(f"Class '{new_class_name}' already exists")
+                        else:
+                            cur = conn.cursor()
+                            cur.execute("INSERT INTO classes (name) VALUES (?)", (new_class_name.strip(),))
+                            conn.commit()
+                            st.success(f"Class '{new_class_name}' created")
+                            log_action("add_class", f"Created class: {new_class_name}", st.session_state.user['username'])
+                            # Optional: force refresh of class list
+                            safe_rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("Class name already exists (case-sensitive conflict)")
+                    except Exception as e:
+                        st.error(f"Error creating class: {str(e)}")
+
         with st.form("add_student_form"):
             col1, col2 = st.columns(2)
             with col1:
