@@ -1439,8 +1439,8 @@ elif page == "Audit Log":
 elif page == "Fee Management":
     st.header("Fee Management")
 
-    tab_terms, tab_structure, tab_invoices = st.tabs(
-        ["Configure Academic Terms", "Configure Fee Structures", "Generate Invoices"]
+    tab_terms, tab_structure, tab_invoices, tab_payments = st.tabs(
+        ["Configure Academic Terms", "Configure Fee Structures", "Generate Invoices", "Record Payments"]
     )
 
     # --- Academic Terms ---
@@ -1516,11 +1516,8 @@ elif page == "Fee Management":
             JOIN classes c ON fs.class_id = c.id
             ORDER BY at.academic_year DESC, c.name
         """, conn)
-        if df_struct.empty:
-            st.info("No fee structures configured yet.")
-        else:
-            st.dataframe(df_struct, use_container_width=True)
-            download_options(df_struct, "fee_structures", "Fee Structures")
+        st.dataframe(df_struct, use_container_width=True)
+        download_options(df_struct, "fee_structures", "Fee Structures")
         conn.close()
 
     # --- Generate Invoices ---
@@ -1546,38 +1543,112 @@ elif page == "Fee Management":
                             st.error("No fee structure found for this class and term.")
                         else:
                             students = conn.execute("SELECT id, name FROM students WHERE class_id=?", (class_id,)).fetchall()
-                            if not students:
-                                st.warning("No students in this class.")
-                            else:
-                                for s in students:
-                                    inv_exists = conn.execute("SELECT id FROM invoices WHERE student_id=? AND term_id=?", (s["id"], term_id)).fetchone()
-                                    if inv_exists:
-                                        continue
-                                    total = fee_row["total_fee"]
-                                    conn.execute("""
-                                        INSERT INTO invoices (invoice_number, student_id, term_id, issue_date, due_date, total_amount, balance_amount, status, created_by)
-                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                    """, (generate_invoice_number(), s["id"], term_id, date.today().isoformat(),
-                                          date.today().isoformat(), total, total, "Pending", st.session_state.user['username']))
-                                conn.commit()
-                                st.success("Invoices generated successfully")
-                                log_action("generate_invoices", f"Class {class_id}, Term {term_id}", st.session_state.user['username'])
+                            for s in students:
+                                inv_exists = conn.execute("SELECT id FROM invoices WHERE student_id=? AND term_id=?", (s["id"], term_id)).fetchone()
+                                if inv_exists:
+                                    continue
+                                total = fee_row["total_fee"]
+                                conn.execute("""
+                                    INSERT INTO invoices (invoice_number, student_id, term_id, issue_date, due_date, total_amount, paid_amount, balance_amount, status, created_by)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """, (generate_invoice_number(), s["id"], term_id, date.today().isoformat(),
+                                      date.today().isoformat(), total, 0, total, "Pending", st.session_state.user['username']))
+                            conn.commit()
+                            st.success("Invoices generated successfully")
+                            log_action("generate_invoices", f"Class {class_id}, Term {term_id}", st.session_state.user['username'])
                     except Exception as e:
                         st.error(f"Error generating invoices: {e}")
 
         df_inv = pd.read_sql("""
             SELECT i.invoice_number, s.name as student_name, c.name as class_name,
-                   at.academic_year, at.term, i.total_amount, i.balance_amount, i.status
+                   at.academic_year, at.term, i.total_amount, i.paid_amount, i.balance_amount, i.status
             FROM invoices i
             JOIN students s ON i.student_id = s.id
             JOIN classes c ON s.class_id = c.id
             JOIN academic_terms at ON i.term_id = at.id
             ORDER BY at.academic_year DESC, c.name, s.name
         """, conn)
-        if df_inv.empty:
-            st.info("No invoices generated yet.")
-        else:
-            st.dataframe(df_inv, use_container_width=True)
-            download_options(df_inv, "invoices", "Invoices Report")
+        st.dataframe(df_inv, use_container_width=True)
+        download_options(df_inv, "invoices", "Invoices Report")
         conn.close()
+
+    # --- Record Payments ---
+    with tab_payments:
+        st.subheader("Record Student Payments")
+        conn = get_db_connection()
+        invoices = pd.read_sql("""
+            SELECT i.id, i.invoice_number, s.name as student_name, c.name as class_name, i.balance_amount, i.status
+            FROM invoices i
+            JOIN students s ON i.student_id = s.id
+            JOIN classes c ON s.class_id = c.id
+            WHERE i.status IN ('Pending','Partially Paid')
+            ORDER BY c.name, s.name
+        """, conn)
+
+        if invoices.empty:
+            st.info("No pending invoices.")
+        else:
+            with st.form("record_payment_form"):
+                inv_opt = st.selectbox("Select Invoice", invoices.apply(lambda r: f"{r['invoice_number']} - {r['student_name']} ({r['class_name']}) Balance: {r['balance_amount']}", axis=1))
+                amount = st.number_input("Payment Amount", min_value=0.0, value=0.0)
+                method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"])
+                                submitted = st.form_submit_button("Record Payment")
+                if submitted:
+                    try:
+                        inv_id = int(inv_opt.split()[0]) if inv_opt.startswith("ID:") else None
+                        # safer: parse invoice id from dataframe
+                        selected_row = invoices.iloc[invoices.apply(lambda r: f"{r['invoice_number']} - {r['student_name']} ({r['class_name']}) Balance: {r['balance_amount']}", axis=1).tolist().index(inv_opt)]
+                        inv_id = selected_row["id"]
+                        balance = selected_row["balance_amount"]
+                        if amount <= 0 or amount > balance:
+                            st.error("Invalid payment amount")
+                        else:
+                            # Update invoice
+                            conn.execute("""
+                                UPDATE invoices
+                                SET paid_amount = paid_amount + ?, balance_amount = balance_amount - ?,
+                                    status = CASE 
+                                        WHEN balance_amount - ? <= 0 THEN 'Fully Paid'
+                                        ELSE 'Partially Paid'
+                                    END
+                                WHERE id = ?
+                            """, (amount, amount, amount, inv_id))
+
+                            # Insert payment record
+                            conn.execute("""
+                                INSERT INTO payments (invoice_id, receipt_number, payment_date, amount, payment_method, received_by, created_by)
+                                VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """, (inv_id, generate_receipt_number(), date.today().isoformat(), amount, method,
+                                  st.session_state.user['username'], st.session_state.user['username']))
+
+                            # Also insert into incomes for Cashbook/Dashboard
+                            conn.execute("""
+                                INSERT INTO incomes (date, receipt_number, amount, source, description, payment_method, payer, received_by, created_by)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (date.today().isoformat(), generate_receipt_number(), amount, "Student Fees",
+                                  f"Payment against invoice {selected_row['invoice_number']}", method,
+                                  selected_row["student_name"], st.session_state.user['username'], st.session_state.user['username']))
+
+                            conn.commit()
+                            st.success("Payment recorded successfully")
+                            log_action("record_payment", f"Invoice {selected_row['invoice_number']} payment {amount}", st.session_state.user['username'])
+                    except Exception as e:
+                        st.error(f"Error recording payment: {e}")
+
+        df_pay = pd.read_sql("""
+            SELECT p.receipt_number, p.payment_date, p.amount, p.payment_method,
+                   s.name as student_name, c.name as class_name, i.invoice_number
+            FROM payments p
+            JOIN invoices i ON p.invoice_id = i.id
+            JOIN students s ON i.student_id = s.id
+            JOIN classes c ON s.class_id = c.id
+            ORDER BY p.payment_date DESC
+        """, conn)
+        if df_pay.empty:
+            st.info("No payments recorded yet.")
+        else:
+            st.dataframe(df_pay, use_container_width=True)
+            download_options(df_pay, "payments", "Payments Report")
+        conn.close()
+
 
