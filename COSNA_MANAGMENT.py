@@ -1,7 +1,7 @@
 # cosna_school_management_full.py
 """
 COSNA School Management System
-Improved full application implementing:
+Final improved single-file application with:
 - Logo on login, sidebar, and embedded in exported PDFs (landscape)
 - Per-student statements and payment UI in Fee Management (atomic transactions)
 - PDF + Excel download options everywhere (PDFs are landscape to avoid column collisions)
@@ -13,7 +13,7 @@ Improved full application implementing:
 - Robust DB initialization and safe migrations
 Notes:
 - Save the school badge image as "school_badge.png" in the app folder or upload it on the login page.
-- This single-file app is intended to replace the previous script. Back up your DB before running.
+- This file is intended to replace the previous script. Back up your DB before running.
 """
 
 import streamlit as st
@@ -91,6 +91,24 @@ def generate_code(prefix="RCPT"):
 def generate_receipt_number(): return generate_code("RCPT")
 def generate_invoice_number(): return generate_code("INV")
 def generate_voucher_number(): return generate_code("VCH")
+
+# Safe rerun helper to avoid AttributeError in environments missing experimental rerun
+def safe_rerun():
+    try:
+        if hasattr(st, "experimental_rerun") and callable(st.experimental_rerun):
+            st.experimental_rerun()
+        elif hasattr(st, "rerun") and callable(st.rerun):
+            st.rerun()
+        else:
+            # Fallback: set a session flag and stop to force UI to re-evaluate on next interaction
+            st.session_state['_needs_refresh'] = True
+            st.stop()
+    except Exception:
+        try:
+            st.session_state['_needs_refresh'] = True
+            st.stop()
+        except Exception:
+            pass
 
 # ---------------------------
 # DB migration helpers
@@ -548,8 +566,7 @@ def show_login_page():
                             "full_name": user["full_name"] if user["full_name"] else user["username"]
                         }
                         log_action("login", f"user {username} logged in", username)
-                        # safe rerun
-                        st.experimental_rerun()
+                        safe_rerun()
                     else:
                         st.error("Invalid credentials")
 
@@ -574,7 +591,7 @@ with st.sidebar:
         uname = user_safe.get('username', 'unknown')
         log_action("logout", f"user {uname} logged out", uname)
         st.session_state.user = None
-        st.experimental_rerun()
+        safe_rerun()
 
 # ---------------------------
 # Main navigation
@@ -828,7 +845,6 @@ elif page == "Students":
                                 conn.isolation_level = None
                                 cur.execute("BEGIN")
                                 # Re-fetch invoice to avoid race
-                                cur.execute("SELECT paid_amount, balance_amount, total_amount FROM invoices WHERE id = ? FOR UPDATE", (inv_id,))
                                 inv_check = cur.execute("SELECT paid_amount, balance_amount, total_amount FROM invoices WHERE id = ?", (inv_id,)).fetchone()
                                 if not inv_check:
                                     cur.execute("ROLLBACK")
@@ -861,7 +877,7 @@ elif page == "Students":
                                         cur.execute("COMMIT")
                                         st.success("Payment recorded and invoice updated")
                                         log_action("pay_invoice", f"Payment {pay_amount} for invoice {chosen_inv}", st.session_state.user['username'])
-                                        st.experimental_rerun()
+                                        safe_rerun()
                             except Exception as e:
                                 try:
                                     cur.execute("ROLLBACK")
@@ -929,7 +945,7 @@ elif page == "Uniforms":
                     cur.execute("COMMIT")
                     st.success("Inventory updated")
                     log_action("update_uniform", f"Updated category {selected_category}: stock={final_stock}, price={new_price}", st.session_state.user['username'])
-                    st.experimental_rerun()
+                    safe_rerun()
                 except Exception as e:
                     try:
                         cur.execute("ROLLBACK")
@@ -989,7 +1005,7 @@ elif page == "Uniforms":
                             cur.execute("COMMIT")
                             st.success(f"Sale recorded. New stock: {new_stock}")
                             log_action("uniform_sale", f"Sold {qty} of {selected} for USh {amount}", st.session_state.user['username'])
-                            st.experimental_rerun()
+                            safe_rerun()
                     except Exception as e:
                         try:
                             cur.execute("ROLLBACK")
@@ -1029,7 +1045,7 @@ elif page == "Uniforms":
                         conn.commit()
                         st.success("Uniform category added")
                         log_action("add_uniform_category", f"Added {cat_name} stock={initial_stock} price={unit_price}", st.session_state.user['username'])
-                        st.experimental_rerun()
+                        safe_rerun()
                     except Exception as e:
                         st.error(f"Error adding category: {e}")
     conn.close()
@@ -1082,6 +1098,7 @@ elif page == "Finances":
                     conn.commit()
                     st.success("Income recorded")
                     log_action("record_income", f"Income {amount} from {source}", st.session_state.user['username'])
+                    safe_rerun()
                 except sqlite3.IntegrityError:
                     st.error("Receipt number already exists")
                 except Exception as e:
@@ -1127,6 +1144,7 @@ elif page == "Finances":
                     conn.commit()
                     st.success("Expense recorded")
                     log_action("record_expense", f"Expense {amount} voucher {voucher_no}", st.session_state.user['username'])
+                    safe_rerun()
                 except sqlite3.IntegrityError:
                     st.error("Voucher number already exists")
                 except Exception as e:
@@ -1321,6 +1339,7 @@ elif page == "Fee Management":
                     conn.commit()
                     st.success("Fee structure updated")
                     log_action("update_fee_structure", f"class {cls_name} term {term} year {academic_year} total {total_fee}", st.session_state.user['username'])
+                    safe_rerun()
                 else:
                     cur.execute("""
                         INSERT INTO fee_structure (class_id, term, academic_year, tuition_fee, uniform_fee, activity_fee, exam_fee, library_fee, other_fee, total_fee)
@@ -1329,6 +1348,7 @@ elif page == "Fee Management":
                     conn.commit()
                     st.success("Fee structure created")
                     log_action("create_fee_structure", f"class {cls_name} term {term} year {academic_year} total {total_fee}", st.session_state.user['username'])
+                    safe_rerun()
             except Exception as e:
                 st.error(f"Error saving fee structure: {e}")
 
@@ -1363,6 +1383,7 @@ elif page == "Fee Management":
                     conn.commit()
                     st.success(f"Invoice {inv_no} created for USh {total_amount:,.0f}")
                     log_action("create_invoice", f"Invoice {inv_no} for student {student_id} amount {total_amount}", st.session_state.user['username'])
+                    safe_rerun()
                 except Exception as e:
                     st.error(f"Error creating invoice: {e}")
     conn.close()
