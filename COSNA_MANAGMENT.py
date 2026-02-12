@@ -1241,7 +1241,7 @@ elif page == "Finances":
             voucher_no = st.text_input("Voucher Number", value=generate_voucher_number())
             amount = st.number_input("Amount (USh)", min_value=0.0, step=100.0)
             category = st.selectbox("Category", ["-- Select --"] + categories["name"].tolist())
-            payment_method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque")
+            payment_method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"])
             payee = st.text_input("Payee")
             description = st.text_area("Description")
             approved_by = st.text_input("Approved By")
