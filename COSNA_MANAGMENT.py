@@ -83,9 +83,9 @@ def verify_password(stored: str, provided: str):
     return hash_password(provided, salt) == stored
 
 def generate_code(prefix="RCPT"):
-    day = datetime.now().strftime("%d")
-    random_chars = ''.join(random.choices(string.ascii_uppercase + string.digits, k=2))
-    return f"{prefix}-{day}{random_chars}"
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    random_chars = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
+    return f"{prefix}-{timestamp}-{random_chars}"
 
 def generate_receipt_number(): return generate_code("RCPT")
 def generate_invoice_number(): return generate_code("INV")
@@ -463,12 +463,11 @@ def dataframe_to_pdf_bytes_landscape(df: pd.DataFrame, title="Report", logo_path
     # Draw logo if available
     y_top = height - 30
     title_x = 40
-    draw_h = 0
     if logo_path and os.path.exists(logo_path):
         try:
             img = ImageReader(logo_path)
             img_w, img_h = img.getSize()
-            max_w = 60
+            max_w = 100
             scale = min(max_w / img_w, 1.0)
             draw_w = img_w * scale
             draw_h = img_h * scale
@@ -480,7 +479,7 @@ def dataframe_to_pdf_bytes_landscape(df: pd.DataFrame, title="Report", logo_path
     c.setFont("Helvetica-Bold", 14)
     c.drawString(title_x, y_top, title)
     c.setFont("Helvetica", 9)
-    y = y_top - draw_h - 20
+    y = y_top - 30
 
     cols = list(df.columns)
     # compute column widths to avoid collisions
@@ -785,10 +784,71 @@ elif page == "Students":
                         st.error(f"Error adding student: {e}")
         conn.close()
 
-    # Student Fees (view + pay)
+    # Student Fees (view + pay) — with new detailed breakdown added here
     with tab_fees:
-        st.subheader("Student Fee Management")
         conn = get_db_connection()
+
+        # ────────────────────────────────────────────────
+        # NEW: Outstanding Fees Breakdown (Total → Class → Students)
+        # ────────────────────────────────────────────────
+        st.subheader("Outstanding Fees Breakdown")
+
+        # Total Outstanding (school-wide)
+        total_outstanding = conn.execute(
+            "SELECT COALESCE(SUM(balance_amount), 0) FROM invoices WHERE status IN ('Pending', 'Partially Paid')"
+        ).fetchone()[0]
+        st.metric("Total Outstanding Fees", f"USh {total_outstanding:,.0f}")
+
+        # Class-level breakdown
+        class_df = pd.read_sql("""
+            SELECT c.name as class_name, COALESCE(SUM(i.balance_amount), 0) as class_outstanding
+            FROM invoices i
+            JOIN students s ON i.student_id = s.id
+            JOIN classes c ON s.class_id = c.id
+            WHERE i.status IN ('Pending', 'Partially Paid')
+            GROUP BY c.name
+            ORDER BY class_outstanding DESC
+        """, conn)
+
+        if class_df.empty:
+            st.info("No outstanding fees at the moment.")
+        else:
+            st.dataframe(class_df, hide_index=True, use_container_width=True)
+            download_options(class_df, filename_base="outstanding_by_class", title="Outstanding Fees by Class")
+
+            # Drill-down: Select class to see students
+            selected_class = st.selectbox(
+                "Select Class to View Student Details",
+                [""] + class_df['class_name'].tolist(),
+                format_func=lambda x: "— Select a class —" if x == "" else x
+            )
+
+            if selected_class:
+                student_df = pd.read_sql("""
+                    SELECT s.name, COALESCE(SUM(i.balance_amount), 0) as outstanding
+                    FROM invoices i
+                    JOIN students s ON i.student_id = s.id
+                    JOIN classes c ON s.class_id = c.id
+                    WHERE c.name = ? AND i.status IN ('Pending', 'Partially Paid')
+                    GROUP BY s.id, s.name
+                    ORDER BY outstanding DESC
+                """, conn, params=(selected_class,))
+
+                if student_df.empty:
+                    st.info(f"No students with outstanding balances in {selected_class}")
+                else:
+                    st.subheader(f"Students with Outstanding Balances in {selected_class}")
+                    st.dataframe(student_df, hide_index=True, use_container_width=True)
+                    download_options(
+                        student_df,
+                        filename_base=f"outstanding_students_{selected_class.replace(' ', '_')}",
+                        title=f"Outstanding Students in {selected_class}"
+                    )
+
+        # ────────────────────────────────────────────────
+        # Existing Student Fee Management content continues below
+        # ────────────────────────────────────────────────
+        st.subheader("Student Fee Management")
         students = pd.read_sql("SELECT s.id, s.name, c.name as class_name FROM students s LEFT JOIN classes c ON s.class_id = c.id ORDER BY s.name", conn)
         if students.empty:
             st.info("No students available")
@@ -1054,7 +1114,6 @@ elif page == "Uniforms":
 # Finances
 # ---------------------------
 elif page == "Finances":
-    # Restrict access: Accountant and Admin can record finances; Clerks can view
     user_role = st.session_state.user.get('role')
     st.header("Finances")
     tab_inc, tab_exp, tab_reports = st.tabs(["Record Income", "Record Expense", "View Transactions"])
@@ -1254,7 +1313,7 @@ elif page == "Financial Report":
     conn.close()
 
 # ---------------------------
-# Cashbook (combined incomes & expenses with running balance)
+# Cashbook
 # ---------------------------
 elif page == "Cashbook":
     require_role(["Admin", "Accountant", "Clerk"])
