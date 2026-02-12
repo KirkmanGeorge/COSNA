@@ -1,4 +1,3 @@
-# cosna_school_management_full.py
 """
 COSNA School Management System
 Final improved single-file application with:
@@ -84,9 +83,9 @@ def verify_password(stored: str, provided: str):
     return hash_password(provided, salt) == stored
 
 def generate_code(prefix="RCPT"):
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    random_chars = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
-    return f"{prefix}-{timestamp}-{random_chars}"
+    day = datetime.now().strftime("%d")
+    random_chars = ''.join(random.choices(string.ascii_uppercase + string.digits, k=2))
+    return f"{prefix}-{day}{random_chars}"
 
 def generate_receipt_number(): return generate_code("RCPT")
 def generate_invoice_number(): return generate_code("INV")
@@ -464,11 +463,12 @@ def dataframe_to_pdf_bytes_landscape(df: pd.DataFrame, title="Report", logo_path
     # Draw logo if available
     y_top = height - 30
     title_x = 40
+    draw_h = 0
     if logo_path and os.path.exists(logo_path):
         try:
             img = ImageReader(logo_path)
             img_w, img_h = img.getSize()
-            max_w = 100
+            max_w = 60
             scale = min(max_w / img_w, 1.0)
             draw_w = img_w * scale
             draw_h = img_h * scale
@@ -480,7 +480,7 @@ def dataframe_to_pdf_bytes_landscape(df: pd.DataFrame, title="Report", logo_path
     c.setFont("Helvetica-Bold", 14)
     c.drawString(title_x, y_top, title)
     c.setFont("Helvetica", 9)
-    y = y_top - 30
+    y = y_top - draw_h - 20
 
     cols = list(df.columns)
     # compute column widths to avoid collisions
