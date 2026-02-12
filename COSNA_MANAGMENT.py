@@ -855,6 +855,7 @@ elif page == "Students":
             st.info("No students available")
         else:
             selected = st.selectbox("Select Student", students.apply(lambda x: f"{x['name']} - {x['class_name']} (ID: {x['id']})", axis=1))
+            student_name = selected.split(" - ")[0]
             student_id = int(selected.split("(ID: ")[1].replace(")", ""))
             try:
                 invoices = pd.read_sql("SELECT * FROM invoices WHERE student_id = ? ORDER BY issue_date DESC", conn, params=(student_id,))
@@ -872,7 +873,7 @@ elif page == "Students":
                         st.info("No payments recorded for this student")
                     else:
                         st.dataframe(payments, use_container_width=True)
-                        download_options(payments, filename_base=f"payments_student_{student_id}", title=f"Payments for Student {student_id}")
+                        download_options(payments, filename_base=f"payments_student_{student_id}", title=f"Payments for {student_name}")
                 except Exception:
                     st.info("No payments or error loading payments")
 
@@ -890,9 +891,9 @@ elif page == "Students":
                         pay_date = st.date_input("Payment Date", date.today())
                         pay_amount = st.number_input("Amount (USh)", min_value=0.0, max_value=float(inv_balance), value=float(inv_balance), step=100.0)
                         pay_method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"])
-                        pay_ref = st.text_input("Reference Number", value="")
+                        pay_ref = st.text_input("Reference Number")
                         pay_receipt = st.text_input("Receipt Number", value=generate_receipt_number())
-                        pay_notes = st.text_area("Notes", value="")
+                        pay_notes = st.text_area("Notes")
                         submit_pay = st.form_submit_button("Record Payment")
                     if submit_pay:
                         if pay_amount <= 0:
@@ -1031,7 +1032,7 @@ elif page == "Uniforms":
             unit_price = float(row['unit_price'])
             st.write(f"Available: {available_stock} | Unit Price: USh {unit_price:,.0f}")
             qty = st.number_input("Quantity to sell", min_value=1, max_value=max(1, available_stock), value=1, step=1)
-            buyer = st.text_input("Buyer Name (optional)", value="")
+            buyer = st.text_input("Buyer Name (optional)")
             payment_method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"])
             receipt_no = st.text_input("Receipt Number", value=generate_receipt_number())
             if st.button("Record Sale"):
@@ -1077,7 +1078,7 @@ elif page == "Uniforms":
     with tab_manage:
         st.subheader("Manage Uniform Categories")
         with st.form("add_uniform_category"):
-            cat_name = st.text_input("Category Name", value="")
+            cat_name = st.text_input("Category Name")
             gender = st.selectbox("Gender", ["boys","girls","shared"])
             is_shared = 1 if gender == "shared" else 0
             initial_stock = st.number_input("Initial Stock", min_value=0, value=0, step=1)
@@ -1132,11 +1133,11 @@ elif page == "Finances":
             date_in = st.date_input("Date", date.today())
             receipt_no = st.text_input("Receipt Number", value=generate_receipt_number())
             amount = st.number_input("Amount (USh)", min_value=0.0, step=100.0)
-            source = st.text_input("Source (e.g., Tuition Fees, Donations)", value="")
+            source = st.text_input("Source (e.g., Tuition Fees, Donations)")
             category = st.selectbox("Category", ["-- Select --"] + categories["name"].tolist())
             payment_method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"])
-            payer = st.text_input("Payer", value="")
-            notes = st.text_area("Notes", value="")
+            payer = st.text_input("Payer")
+            notes = st.text_area("Notes")
             submit_income = st.form_submit_button("Record Income")
         if submit_income:
             if user_role not in ("Admin", "Accountant"):
@@ -1180,9 +1181,9 @@ elif page == "Finances":
             amount = st.number_input("Amount (USh)", min_value=0.0, step=100.0)
             category = st.selectbox("Category", ["-- Select --"] + categories["name"].tolist())
             payment_method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"])
-            payee = st.text_input("Payee", value="")
-            description = st.text_area("Description", value="")
-            approved_by = st.text_input("Approved By", value="")
+            payee = st.text_input("Payee")
+            description = st.text_area("Description")
+            approved_by = st.text_input("Approved By")
             submit_expense = st.form_submit_button("Record Expense")
         if submit_expense:
             if user_role not in ("Admin", "Accountant"):
@@ -1412,7 +1413,7 @@ elif page == "Fee Management":
             except Exception as e:
                 st.error(f"Error saving fee structure: {e}")
 
-    # Generate invoice for a student with breakdown
+    # Generate invoice for a student
     st.subheader("Generate Invoice")
     students = pd.read_sql("SELECT s.id, s.name, c.name as class_name FROM students s LEFT JOIN classes c ON s.class_id = c.id ORDER BY s.name", conn)
     if students.empty:
@@ -1420,48 +1421,34 @@ elif page == "Fee Management":
     else:
         selected = st.selectbox("Select Student", students.apply(lambda x: f"{x['name']} - {x['class_name']} (ID: {x['id']})", axis=1))
         student_id = int(selected.split("(ID: ")[1].replace(")", ""))
-        fee_options = pd.read_sql("""
-            SELECT fs.id, c.name as class_name, fs.term, fs.academic_year, fs.tuition_fee, fs.uniform_fee, fs.activity_fee, fs.exam_fee, fs.library_fee, fs.other_fee, fs.total_fee 
-            FROM fee_structure fs JOIN classes c ON fs.class_id = c.id 
-            WHERE fs.class_id = (SELECT class_id FROM students WHERE id = ?) 
-            ORDER BY fs.academic_year DESC
-        """, conn, params=(student_id,))
+        fee_options = pd.read_sql("SELECT fs.id, c.name as class_name, fs.term, fs.academic_year, fs.total_fee FROM fee_structure fs JOIN classes c ON fs.class_id = c.id WHERE fs.class_id = (SELECT class_id FROM students WHERE id = ?) ORDER BY fs.academic_year DESC", conn, params=(student_id,))
         if fee_options.empty:
             st.info("No fee structure for this student's class. Define fee structure first.")
         else:
             chosen = st.selectbox("Choose Fee Structure", fee_options.apply(lambda x: f"{x['academic_year']} - {x['term']} (USh {x['total_fee']:,.0f})", axis=1))
-            if chosen:
-                idx = fee_options.index[fee_options.apply(lambda x: f"{x['academic_year']} - {x['term']} (USh {x['total_fee']:,.0f})", axis=1) == chosen][0]
-                fee_row = fee_options.loc[idx]
-                st.subheader("Fee Breakdown for Selected Structure")
-                cols = st.columns(3)
-                with cols[0]:
-                    st.metric("Tuition Fee", f"USh {fee_row['tuition_fee']:,.0f}")
-                    st.metric("Uniform Fee", f"USh {fee_row['uniform_fee']:,.0f}")
-                with cols[1]:
-                    st.metric("Activity Fee", f"USh {fee_row['activity_fee']:,.0f}")
-                    st.metric("Exam Fee", f"USh {fee_row['exam_fee']:,.0f}")
-                with cols[2]:
-                    st.metric("Library Fee", f"USh {fee_row['library_fee']:,.0f}")
-                    st.metric("Other Fee", f"USh {fee_row['other_fee']:,.0f}")
-                st.metric("Total Fee", f"USh {fee_row['total_fee']:,.0f}")
+            idx = fee_options.index[fee_options.apply(lambda x: f"{x['academic_year']} - {x['term']} (USh {x['total_fee']:,.0f})", axis=1) == chosen][0]
+            fee_row = fee_options.loc[idx]
             issue_date = st.date_input("Issue Date", date.today())
             due_date = st.date_input("Due Date", date.today())
-            notes = st.text_area("Notes", value="")
+            notes = st.text_area("Notes")
             if st.button("Create Invoice"):
                 try:
-                    inv_no = generate_invoice_number()
-                    total_amount = float(fee_row['total_fee'])
                     cur = conn.cursor()
-                    # Create invoice with balance = total_amount
-                    cur.execute("""
-                        INSERT INTO invoices (invoice_number, student_id, issue_date, due_date, academic_year, term, total_amount, paid_amount, balance_amount, status, notes, created_by)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'Pending', ?, ?)
-                    """, (inv_no, student_id, issue_date.isoformat(), due_date.isoformat(), fee_row['academic_year'], fee_row['term'], total_amount, total_amount, notes, st.session_state.user['username']))
-                    conn.commit()
-                    st.success(f"Invoice {inv_no} created for USh {total_amount:,.0f}")
-                    log_action("create_invoice", f"Invoice {inv_no} for student {student_id} amount {total_amount}", st.session_state.user['username'])
-                    safe_rerun()
+                    existing_invoice = cur.execute("SELECT id FROM invoices WHERE student_id = ? AND term = ? AND academic_year = ?", (student_id, fee_row['term'], fee_row['academic_year'])).fetchone()
+                    if existing_invoice:
+                        st.error("An invoice for this student, term, and academic year already exists. Cannot create duplicate.")
+                    else:
+                        inv_no = generate_invoice_number()
+                        total_amount = float(fee_row['total_fee'])
+                        # Create invoice with balance = total_amount
+                        cur.execute("""
+                            INSERT INTO invoices (invoice_number, student_id, issue_date, due_date, academic_year, term, total_amount, paid_amount, balance_amount, status, notes, created_by)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'Pending', ?, ?)
+                        """, (inv_no, student_id, issue_date.isoformat(), due_date.isoformat(), fee_row['academic_year'], fee_row['term'], total_amount, total_amount, notes, st.session_state.user['username']))
+                        conn.commit()
+                        st.success(f"Invoice {inv_no} created for USh {total_amount:,.0f}")
+                        log_action("create_invoice", f"Invoice {inv_no} for student {student_id} amount {total_amount}", st.session_state.user['username'])
+                        safe_rerun()
                 except Exception as e:
                     st.error(f"Error creating invoice: {e}")
     conn.close()
