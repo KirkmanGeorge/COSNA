@@ -83,9 +83,9 @@ def verify_password(stored: str, provided: str):
     return hash_password(provided, salt) == stored
 
 def generate_code(prefix="RCPT"):
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    random_chars = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
-    return f"{prefix}-{timestamp}-{random_chars}"
+    day = datetime.now().strftime("%d")
+    random_chars = ''.join(random.choices(string.ascii_uppercase + string.digits, k=2))
+    return f"{prefix}-{day}{random_chars}"
 
 def generate_receipt_number(): return generate_code("RCPT")
 def generate_invoice_number(): return generate_code("INV")
@@ -463,6 +463,7 @@ def dataframe_to_pdf_bytes_landscape(df: pd.DataFrame, title="Report", logo_path
     # Draw logo if available
     y_top = height - 30
     title_x = 40
+    draw_h = 0
     if logo_path and os.path.exists(logo_path):
         try:
             img = ImageReader(logo_path)
@@ -479,7 +480,7 @@ def dataframe_to_pdf_bytes_landscape(df: pd.DataFrame, title="Report", logo_path
     c.setFont("Helvetica-Bold", 14)
     c.drawString(title_x, y_top, title)
     c.setFont("Helvetica", 9)
-    y = y_top - 30
+    y = y_top - draw_h - 30  # Adjusted to prevent overlap, matching original positioning with extra margin
 
     cols = list(df.columns)
     # compute column widths to avoid collisions
@@ -634,7 +635,7 @@ if page == "Dashboard":
             if df_inc.empty:
                 st.info("No income records yet")
             else:
-                st.dataframe(df_inc, width='stretch')
+                st.dataframe(df_inc, use_container_width=True)
         except Exception:
             st.info("No income records yet or error loading incomes")
     with colB:
@@ -649,7 +650,7 @@ if page == "Dashboard":
             if df_exp.empty:
                 st.info("No expense records yet")
             else:
-                st.dataframe(df_exp, width='stretch')
+                st.dataframe(df_exp, use_container_width=True)
         except Exception:
             st.info("No expense records yet or error loading expenses")
 
@@ -671,7 +672,7 @@ if page == "Dashboard":
         else:
             df_pivot = df_monthly.pivot_table(index='month', columns='type', values='total_amount', aggfunc='sum').fillna(0)
             df_pivot['Net Balance'] = df_pivot.get('Income', 0) - df_pivot.get('Expense', 0)
-            st.dataframe(df_pivot, width='stretch')
+            st.dataframe(df_pivot, use_container_width=True)
             download_options(df_pivot.reset_index(), filename_base="monthly_financial_summary", title="Monthly Financial Summary")
     except Exception:
         st.info("No monthly data available")
@@ -717,7 +718,7 @@ elif page == "Students":
             if df.empty:
                 st.info("No students found")
             else:
-                st.dataframe(df, width='stretch')
+                st.dataframe(df, use_container_width=True)
                 download_options(df, filename_base="students", title="Students Report")
         except Exception:
             st.info("No student records yet or error loading data")
@@ -784,7 +785,7 @@ elif page == "Students":
                         st.error(f"Error adding student: {e}")
         conn.close()
 
-    # Student Fees (view + pay) — with new detailed breakdown added here
+    # Student Fees (view + pay)
     with tab_fees:
         conn = get_db_connection()
 
@@ -862,7 +863,7 @@ elif page == "Students":
             if invoices.empty:
                 st.info("No invoices for this student")
             else:
-                st.dataframe(invoices[['invoice_number','issue_date','due_date','total_amount','paid_amount','balance_amount','status']], width='stretch')
+                st.dataframe(invoices[['invoice_number','issue_date','due_date','total_amount','paid_amount','balance_amount','status']], use_container_width=True)
 
                 st.subheader("Payment History")
                 try:
@@ -870,7 +871,7 @@ elif page == "Students":
                     if payments.empty:
                         st.info("No payments recorded for this student")
                     else:
-                        st.dataframe(payments, width='stretch')
+                        st.dataframe(payments, use_container_width=True)
                         download_options(payments, filename_base=f"payments_student_{student_id}", title=f"Payments for Student {student_id}")
                 except Exception:
                     st.info("No payments or error loading payments")
@@ -889,9 +890,9 @@ elif page == "Students":
                         pay_date = st.date_input("Payment Date", date.today())
                         pay_amount = st.number_input("Amount (USh)", min_value=0.0, max_value=float(inv_balance), value=float(inv_balance), step=100.0)
                         pay_method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"])
-                        pay_ref = st.text_input("Reference Number")
+                        pay_ref = st.text_input("Reference Number", value="")
                         pay_receipt = st.text_input("Receipt Number", value=generate_receipt_number())
-                        pay_notes = st.text_area("Notes")
+                        pay_notes = st.text_area("Notes", value="")
                         submit_pay = st.form_submit_button("Record Payment")
                     if submit_pay:
                         if pay_amount <= 0:
@@ -969,7 +970,7 @@ elif page == "Uniforms":
         else:
             display_df = inventory_df.copy()
             display_df['unit_price'] = display_df['unit_price'].apply(lambda x: f"USh {x:,.0f}")
-            st.dataframe(display_df[['category','gender','is_shared','stock','unit_price']], width='stretch')
+            st.dataframe(display_df[['category','gender','is_shared','stock','unit_price']], use_container_width=True)
             total_stock = inventory_df['stock'].sum()
             total_value = (inventory_df['stock'] * inventory_df['unit_price']).sum()
             col1, col2 = st.columns(2)
@@ -1030,7 +1031,7 @@ elif page == "Uniforms":
             unit_price = float(row['unit_price'])
             st.write(f"Available: {available_stock} | Unit Price: USh {unit_price:,.0f}")
             qty = st.number_input("Quantity to sell", min_value=1, max_value=max(1, available_stock), value=1, step=1)
-            buyer = st.text_input("Buyer Name (optional)")
+            buyer = st.text_input("Buyer Name (optional)", value="")
             payment_method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"])
             receipt_no = st.text_input("Receipt Number", value=generate_receipt_number())
             if st.button("Record Sale"):
@@ -1076,7 +1077,7 @@ elif page == "Uniforms":
     with tab_manage:
         st.subheader("Manage Uniform Categories")
         with st.form("add_uniform_category"):
-            cat_name = st.text_input("Category Name")
+            cat_name = st.text_input("Category Name", value="")
             gender = st.selectbox("Gender", ["boys","girls","shared"])
             is_shared = 1 if gender == "shared" else 0
             initial_stock = st.number_input("Initial Stock", min_value=0, value=0, step=1)
@@ -1131,11 +1132,11 @@ elif page == "Finances":
             date_in = st.date_input("Date", date.today())
             receipt_no = st.text_input("Receipt Number", value=generate_receipt_number())
             amount = st.number_input("Amount (USh)", min_value=0.0, step=100.0)
-            source = st.text_input("Source (e.g., Tuition Fees, Donations)")
+            source = st.text_input("Source (e.g., Tuition Fees, Donations)", value="")
             category = st.selectbox("Category", ["-- Select --"] + categories["name"].tolist())
             payment_method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"])
-            payer = st.text_input("Payer")
-            notes = st.text_area("Notes")
+            payer = st.text_input("Payer", value="")
+            notes = st.text_area("Notes", value="")
             submit_income = st.form_submit_button("Record Income")
         if submit_income:
             if user_role not in ("Admin", "Accountant"):
@@ -1179,9 +1180,9 @@ elif page == "Finances":
             amount = st.number_input("Amount (USh)", min_value=0.0, step=100.0)
             category = st.selectbox("Category", ["-- Select --"] + categories["name"].tolist())
             payment_method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"])
-            payee = st.text_input("Payee")
-            description = st.text_area("Description")
-            approved_by = st.text_input("Approved By")
+            payee = st.text_input("Payee", value="")
+            description = st.text_area("Description", value="")
+            approved_by = st.text_input("Approved By", value="")
             submit_expense = st.form_submit_button("Record Expense")
         if submit_expense:
             if user_role not in ("Admin", "Accountant"):
@@ -1231,13 +1232,13 @@ elif page == "Finances":
         if df_inc.empty:
             st.info("No incomes recorded")
         else:
-            st.dataframe(df_inc, width='stretch')
+            st.dataframe(df_inc, use_container_width=True)
             download_options(df_inc, filename_base="recent_incomes", title="Recent Incomes")
         st.write("Recent Expenses")
         if df_exp.empty:
             st.info("No expenses recorded")
         else:
-            st.dataframe(df_exp, width='stretch')
+            st.dataframe(df_exp, use_container_width=True)
             download_options(df_exp, filename_base="recent_expenses", title="Recent Expenses")
         conn.close()
 
@@ -1263,9 +1264,9 @@ elif page == "Financial Report":
                         st.info("No transactions in this range")
                     else:
                         st.subheader("Incomes")
-                        st.dataframe(df_inc, width='stretch')
+                        st.dataframe(df_inc, use_container_width=True)
                         st.subheader("Expenses")
-                        st.dataframe(df_exp, width='stretch')
+                        st.dataframe(df_exp, use_container_width=True)
                         total_inc = df_inc['amount'].sum() if not df_inc.empty else 0
                         total_exp = df_exp['amount'].sum() if not df_exp.empty else 0
                         st.metric("Total Income", f"USh {total_inc:,.0f}")
@@ -1278,14 +1279,14 @@ elif page == "Financial Report":
                     if df.empty:
                         st.info("No data for selected category type")
                     else:
-                        st.dataframe(df, width='stretch')
+                        st.dataframe(df, use_container_width=True)
                         download_options(df, filename_base=f"by_category_{cat}", title=f"By Category - {cat}")
                 elif report_type == "Outstanding Invoices":
                     df = pd.read_sql("SELECT invoice_number, student_id, issue_date, due_date, total_amount, paid_amount, balance_amount, status FROM invoices WHERE status IN ('Pending','Partially Paid') ORDER BY due_date", conn)
                     if df.empty:
                         st.info("No outstanding invoices")
                     else:
-                        st.dataframe(df, width='stretch')
+                        st.dataframe(df, use_container_width=True)
                         download_options(df, filename_base="outstanding_invoices", title="Outstanding Invoices")
                 else:  # Student Payment Summary
                     students = pd.read_sql("SELECT id, name FROM students ORDER BY name", conn)
@@ -1300,13 +1301,13 @@ elif page == "Financial Report":
                         if df_inv.empty:
                             st.info("No invoices for this student")
                         else:
-                            st.dataframe(df_inv, width='stretch')
+                            st.dataframe(df_inv, use_container_width=True)
                             download_options(df_inv, filename_base=f"student_{sid}_invoices", title=f"Invoices for Student {sid}")
                         st.subheader("Payments")
                         if df_pay.empty:
                             st.info("No payments for this student")
                         else:
-                            st.dataframe(df_pay, width='stretch')
+                            st.dataframe(df_pay, use_container_width=True)
                             download_options(df_pay, filename_base=f"student_{sid}_payments", title=f"Payments for Student {sid}")
             except Exception as e:
                 st.error(f"Error generating report: {e}")
@@ -1337,7 +1338,7 @@ elif page == "Cashbook":
                 combined['running_balance'] = combined['amount_signed'].cumsum()
                 display = combined[['tx_date','type','description','amount','running_balance']].copy()
                 display['tx_date'] = display['tx_date'].dt.date
-                st.dataframe(display, width='stretch')
+                st.dataframe(display, use_container_width=True)
                 download_options(display, filename_base=f"cashbook_{start_date}_{end_date}", title="Cashbook")
         except Exception as e:
             st.error(f"Error loading cashbook: {e}")
@@ -1355,7 +1356,7 @@ elif page == "Audit Log":
         if df_audit.empty:
             st.info("No audit entries")
         else:
-            st.dataframe(df_audit, width='stretch')
+            st.dataframe(df_audit, use_container_width=True)
             download_options(df_audit, filename_base="audit_log", title="Audit Log")
     except Exception as e:
         st.error(f"Error loading audit log: {e}")
@@ -1411,7 +1412,7 @@ elif page == "Fee Management":
             except Exception as e:
                 st.error(f"Error saving fee structure: {e}")
 
-    # Generate invoice for a student
+    # Generate invoice for a student with breakdown
     st.subheader("Generate Invoice")
     students = pd.read_sql("SELECT s.id, s.name, c.name as class_name FROM students s LEFT JOIN classes c ON s.class_id = c.id ORDER BY s.name", conn)
     if students.empty:
@@ -1419,16 +1420,34 @@ elif page == "Fee Management":
     else:
         selected = st.selectbox("Select Student", students.apply(lambda x: f"{x['name']} - {x['class_name']} (ID: {x['id']})", axis=1))
         student_id = int(selected.split("(ID: ")[1].replace(")", ""))
-        fee_options = pd.read_sql("SELECT fs.id, c.name as class_name, fs.term, fs.academic_year, fs.total_fee FROM fee_structure fs JOIN classes c ON fs.class_id = c.id WHERE fs.class_id = (SELECT class_id FROM students WHERE id = ?) ORDER BY fs.academic_year DESC", conn, params=(student_id,))
+        fee_options = pd.read_sql("""
+            SELECT fs.id, c.name as class_name, fs.term, fs.academic_year, fs.tuition_fee, fs.uniform_fee, fs.activity_fee, fs.exam_fee, fs.library_fee, fs.other_fee, fs.total_fee 
+            FROM fee_structure fs JOIN classes c ON fs.class_id = c.id 
+            WHERE fs.class_id = (SELECT class_id FROM students WHERE id = ?) 
+            ORDER BY fs.academic_year DESC
+        """, conn, params=(student_id,))
         if fee_options.empty:
             st.info("No fee structure for this student's class. Define fee structure first.")
         else:
             chosen = st.selectbox("Choose Fee Structure", fee_options.apply(lambda x: f"{x['academic_year']} - {x['term']} (USh {x['total_fee']:,.0f})", axis=1))
-            idx = fee_options.index[fee_options.apply(lambda x: f"{x['academic_year']} - {x['term']} (USh {x['total_fee']:,.0f})", axis=1) == chosen][0]
-            fee_row = fee_options.loc[idx]
+            if chosen:
+                idx = fee_options.index[fee_options.apply(lambda x: f"{x['academic_year']} - {x['term']} (USh {x['total_fee']:,.0f})", axis=1) == chosen][0]
+                fee_row = fee_options.loc[idx]
+                st.subheader("Fee Breakdown for Selected Structure")
+                cols = st.columns(3)
+                with cols[0]:
+                    st.metric("Tuition Fee", f"USh {fee_row['tuition_fee']:,.0f}")
+                    st.metric("Uniform Fee", f"USh {fee_row['uniform_fee']:,.0f}")
+                with cols[1]:
+                    st.metric("Activity Fee", f"USh {fee_row['activity_fee']:,.0f}")
+                    st.metric("Exam Fee", f"USh {fee_row['exam_fee']:,.0f}")
+                with cols[2]:
+                    st.metric("Library Fee", f"USh {fee_row['library_fee']:,.0f}")
+                    st.metric("Other Fee", f"USh {fee_row['other_fee']:,.0f}")
+                st.metric("Total Fee", f"USh {fee_row['total_fee']:,.0f}")
             issue_date = st.date_input("Issue Date", date.today())
             due_date = st.date_input("Due Date", date.today())
-            notes = st.text_area("Notes")
+            notes = st.text_area("Notes", value="")
             if st.button("Create Invoice"):
                 try:
                     inv_no = generate_invoice_number()
