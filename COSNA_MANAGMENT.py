@@ -10,6 +10,7 @@ Final improved single-file application with:
 - Role-based access (Admin, Accountant, Clerk) with simple enforcement
 - Cashbook (combined incomes/expenses running balance) view
 - Robust DB initialization and safe migrations
+- Editing capabilities for saved information (students, classes, uniforms, finances, etc.)
 Notes:
 - Save the school badge image as "school_badge.png" in the app folder or upload it on the login page.
 - This file is intended to replace the previous script. Back up your DB before running.
@@ -683,7 +684,7 @@ if page == "Dashboard":
 # ---------------------------
 elif page == "Students":
     st.header("Students")
-    tab_view, tab_add, tab_fees = st.tabs(["View & Export", "Add Student", "Student Fees"])
+    tab_view, tab_add, tab_edit, tab_fees = st.tabs(["View & Export", "Add Student", "Edit Student", "Student Fees"])
 
     # View & Export
     with tab_view:
@@ -814,6 +815,56 @@ elif page == "Students":
                         log_action("add_student", f"Added student {name} (ID: {student_id})", st.session_state.user['username'])
                     except Exception as e:
                         st.error(f"Error adding student: {e}")
+        conn.close()
+
+    # Edit Student
+    with tab_edit:
+        st.subheader("Edit Student")
+        conn = get_db_connection()
+        students = pd.read_sql("SELECT s.id, s.name, c.name as class_name FROM students s LEFT JOIN classes c ON s.class_id = c.id ORDER BY s.name", conn)
+        if students.empty:
+            st.info("No students available to edit")
+        else:
+            selected = st.selectbox("Select Student to Edit", students.apply(lambda x: f"{x['name']} - {x['class_name']} (ID: {x['id']})", axis=1))
+            student_id = int(selected.split("(ID: ")[1].replace(")", ""))
+            student_row = conn.execute("SELECT * FROM students WHERE id = ?", (student_id,)).fetchone()
+
+            with st.form("edit_student_form"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    name = st.text_input("Full Name", value=student_row['name'])
+                    age = st.number_input("Age", min_value=3, max_value=30, value=student_row['age'])
+                    enroll_date = st.date_input("Enrollment Date", value=date.fromisoformat(student_row['enrollment_date']))
+                with col2:
+                    cls_df = pd.read_sql("SELECT id, name FROM classes ORDER BY name", conn)
+                    cls_options = cls_df["name"].tolist() if not cls_df.empty else []
+                    current_cls_name = conn.execute("SELECT name FROM classes WHERE id = ?", (student_row['class_id'],)).fetchone()[0]
+                    cls_name = st.selectbox("Class", cls_options, index=cls_options.index(current_cls_name) if current_cls_name in cls_options else 0)
+                    cls_id = int(cls_df[cls_df["name"] == cls_name]["id"].iloc[0])
+                    student_type = st.radio("Student Type", ["New", "Returning"], index=0 if student_row['student_type'] == "New" else 1)
+                submitted = st.form_submit_button("Update Student")
+            if submitted:
+                if not name:
+                    st.error("Provide student name")
+                else:
+                    try:
+                        existing = [r["normalized_name"] for r in conn.execute("SELECT normalized_name FROM students WHERE id != ?", (student_id,)).fetchall() if r["normalized_name"]]
+                        nname = normalize_text(name)
+                        dup, match = is_near_duplicate(nname, existing)
+                        if dup:
+                            st.warning(f"A similar student already exists: '{match}'. Please verify before updating.")
+                        else:
+                            cur = conn.cursor()
+                            cur.execute("""
+                                UPDATE students SET name = ?, normalized_name = ?, age = ?, enrollment_date = ?, class_id = ?, student_type = ?
+                                WHERE id = ?
+                            """, (name.strip(), nname, int(age), enroll_date.isoformat(), cls_id, student_type, student_id))
+                            conn.commit()
+                            st.success("Student updated successfully")
+                            log_action("edit_student", f"Updated student {name} (ID: {student_id})", st.session_state.user['username'])
+                            safe_rerun()
+                    except Exception as e:
+                        st.error(f"Error updating student: {e}")
         conn.close()
 
     # Student Fees (view + pay)
@@ -993,7 +1044,7 @@ elif page == "Uniforms":
             ORDER BY uc.gender, uc.category
         """, conn)
 
-    tab_view, tab_update, tab_sale, tab_manage = st.tabs(["View Inventory", "Update Stock/Price", "Record Sale", "Manage Categories"])
+    tab_view, tab_update, tab_sale, tab_manage, tab_edit_cat = st.tabs(["View Inventory", "Update Stock/Price", "Record Sale", "Manage Categories", "Edit Category"])
 
     with tab_view:
         inventory_df = get_inventory_df()
@@ -1141,6 +1192,43 @@ elif page == "Uniforms":
                         safe_rerun()
                     except Exception as e:
                         st.error(f"Error adding category: {e}")
+
+    with tab_edit_cat:
+        st.subheader("Edit Uniform Category")
+        categories_df = pd.read_sql("SELECT id, category, gender, is_shared FROM uniform_categories ORDER BY category", conn)
+        if categories_df.empty:
+            st.info("No categories to edit")
+        else:
+            selected_category = st.selectbox("Select Category to Edit", categories_df["category"].tolist())
+            cat_row = categories_df[categories_df["category"] == selected_category].iloc[0]
+            cat_id = int(cat_row['id'])
+            with st.form("edit_uniform_category"):
+                new_cat_name = st.text_input("Category Name", value=cat_row['category'])
+                new_gender = st.selectbox("Gender", ["boys","girls","shared"], index=["boys","girls","shared"].index(cat_row['gender']))
+                new_is_shared = 1 if new_gender == "shared" else 0
+                submit_edit = st.form_submit_button("Update Category")
+            if submit_edit:
+                if not new_cat_name:
+                    st.error("Enter category name")
+                else:
+                    try:
+                        existing = [r["normalized_category"] for r in conn.execute("SELECT normalized_category FROM uniform_categories WHERE id != ?", (cat_id,)).fetchall() if r["normalized_category"]]
+                        ncat = normalize_text(new_cat_name)
+                        dup, match = is_near_duplicate(ncat, existing)
+                        if dup:
+                            st.warning(f"A similar category exists: '{match}'")
+                        else:
+                            cur = conn.cursor()
+                            cur.execute("""
+                                UPDATE uniform_categories SET category = ?, normalized_category = ?, gender = ?, is_shared = ?
+                                WHERE id = ?
+                            """, (new_cat_name.strip(), ncat, new_gender, new_is_shared, cat_id))
+                            conn.commit()
+                            st.success("Category updated")
+                            log_action("edit_uniform_category", f"Updated category ID {cat_id} to {new_cat_name}", st.session_state.user['username'])
+                            safe_rerun()
+                    except Exception as e:
+                        st.error(f"Error updating category: {e}")
     conn.close()
 
 # ---------------------------
@@ -1149,7 +1237,7 @@ elif page == "Uniforms":
 elif page == "Finances":
     user_role = st.session_state.user.get('role')
     st.header("Finances")
-    tab_inc, tab_exp, tab_reports = st.tabs(["Record Income", "Record Expense", "View Transactions"])
+    tab_inc, tab_exp, tab_reports, tab_edit_inc, tab_edit_exp = st.tabs(["Record Income", "Record Expense", "View Transactions", "Edit Income", "Edit Expense"])
 
     with tab_inc:
         st.subheader("Record Income")
@@ -1272,6 +1360,102 @@ elif page == "Finances":
         else:
             st.dataframe(df_exp, use_container_width=True)
             download_options(df_exp, filename_base="recent_expenses", title="Recent Expenses")
+        conn.close()
+
+    with tab_edit_inc:
+        st.subheader("Edit Income")
+        conn = get_db_connection()
+        incomes = pd.read_sql("SELECT id, receipt_number, date, amount, source, category_id, description, payment_method, payer FROM incomes ORDER BY date DESC", conn)
+        if incomes.empty:
+            st.info("No incomes to edit")
+        else:
+            selected_inc = st.selectbox("Select Income by Receipt Number", incomes['receipt_number'].tolist())
+            inc_row = incomes[incomes['receipt_number'] == selected_inc].iloc[0]
+            inc_id = int(inc_row['id'])
+            categories = pd.read_sql("SELECT id, name FROM expense_categories WHERE category_type = 'Income' ORDER BY name", conn)
+            with st.form("edit_income_form"):
+                date_in = st.date_input("Date", value=date.fromisoformat(inc_row['date']))
+                receipt_no = st.text_input("Receipt Number", value=inc_row['receipt_number'])
+                amount = st.number_input("Amount (USh)", min_value=0.0, value=float(inc_row['amount']), step=100.0)
+                source = st.text_input("Source", value=inc_row['source'])
+                current_cat_id = inc_row['category_id']
+                current_cat_name = categories[categories['id'] == current_cat_id]['name'].iloc[0] if current_cat_id in categories['id'].values else "-- Select --"
+                category = st.selectbox("Category", ["-- Select --"] + categories["name"].tolist(), index=0 if current_cat_name == "-- Select --" else categories["name"].tolist().index(current_cat_name) + 1)
+                payment_method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"], index=["Cash","Bank Transfer","Mobile Money","Cheque"].index(inc_row['payment_method']))
+                payer = st.text_input("Payer", value=inc_row['payer'])
+                notes = st.text_area("Notes", value=inc_row['description'])
+                submit_edit = st.form_submit_button("Update Income")
+            if submit_edit:
+                if amount <= 0:
+                    st.error("Enter a positive amount")
+                else:
+                    try:
+                        cur = conn.cursor()
+                        cat_id = None
+                        if category != "-- Select --":
+                            cat_row = categories[categories["name"] == category]
+                            if not cat_row.empty:
+                                cat_id = int(cat_row["id"].iloc[0])
+                        cur.execute("""
+                            UPDATE incomes SET date = ?, receipt_number = ?, amount = ?, source = ?, category_id = ?, description = ?, payment_method = ?, payer = ?
+                            WHERE id = ?
+                        """, (date_in.isoformat(), receipt_no, amount, source, cat_id, notes, payment_method, payer, inc_id))
+                        conn.commit()
+                        st.success("Income updated")
+                        log_action("edit_income", f"Updated income ID {inc_id} receipt {receipt_no}", st.session_state.user['username'])
+                        safe_rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("Receipt number already exists")
+                    except Exception as e:
+                        st.error(f"Error updating income: {e}")
+        conn.close()
+
+    with tab_edit_exp:
+        st.subheader("Edit Expense")
+        conn = get_db_connection()
+        expenses = pd.read_sql("SELECT id, voucher_number, date, amount, category_id, description, payment_method, payee, approved_by FROM expenses ORDER BY date DESC", conn)
+        if expenses.empty:
+            st.info("No expenses to edit")
+        else:
+            selected_exp = st.selectbox("Select Expense by Voucher Number", expenses['voucher_number'].tolist())
+            exp_row = expenses[expenses['voucher_number'] == selected_exp].iloc[0]
+            exp_id = int(exp_row['id'])
+            categories = pd.read_sql("SELECT id, name FROM expense_categories WHERE category_type = 'Expense' ORDER BY name", conn)
+            with st.form("edit_expense_form"):
+                date_e = st.date_input("Date", value=date.fromisoformat(exp_row['date']))
+                voucher_no = st.text_input("Voucher Number", value=exp_row['voucher_number'])
+                amount = st.number_input("Amount (USh)", min_value=0.0, value=float(exp_row['amount']), step=100.0)
+                current_cat_id = exp_row['category_id']
+                current_cat_name = categories[categories['id'] == current_cat_id]['name'].iloc[0] if current_cat_id in categories['id'].values else "-- Select --"
+                category = st.selectbox("Category", ["-- Select --"] + categories["name"].tolist(), index=0 if current_cat_name == "-- Select --" else categories["name"].tolist().index(current_cat_name) + 1)
+                payment_method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"], index=["Cash","Bank Transfer","Mobile Money","Cheque"].index(exp_row['payment_method']))
+                payee = st.text_input("Payee", value=exp_row['payee'])
+                description = st.text_area("Description", value=exp_row['description'])
+                approved_by = st.text_input("Approved By", value=exp_row['approved_by'])
+                submit_edit = st.form_submit_button("Update Expense")
+            if submit_edit:
+                if amount <= 0:
+                    st.error("Enter a positive amount")
+                else:
+                    try:
+                        cur = conn.cursor()
+                        cat_id = None
+                        if category != "-- Select --":
+                            cat_row = categories[categories["name"] == category]
+                            if not cat_row.empty:
+                                cat_id = int(cat_row["id"].iloc[0])
+                        cur.execute("""
+                            UPDATE expenses SET date = ?, voucher_number = ?, amount = ?, category_id = ?, description = ?, payment_method = ?, payee = ?, approved_by = ?
+                            WHERE id = ?
+                        """, (date_e.isoformat(), voucher_no, amount, cat_id, description, payment_method, payee, approved_by, exp_id))
+                        conn.commit()
+                        st.success("Expense updated")
+                        log_action("edit_expense", f"Updated expense ID {exp_id} voucher {voucher_no}", st.session_state.user['username'])
+                        safe_rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("Voucher number already exists")
+                    except Exception as e:
+                        st.error(f"Error updating expense: {e}")
         conn.close()
 
 # ---------------------------
@@ -1482,4 +1666,34 @@ elif page == "Fee Management":
                         safe_rerun()
                 except Exception as e:
                     st.error(f"Error creating invoice: {e}")
+
+    # Edit Invoice
+    st.subheader("Edit Invoice")
+    invoices = pd.read_sql("SELECT i.id, i.invoice_number, s.name as student_name FROM invoices i JOIN students s ON i.student_id = s.id ORDER BY i.issue_date DESC", conn)
+    if invoices.empty:
+        st.info("No invoices to edit")
+    else:
+        selected_inv = st.selectbox("Select Invoice by Number", invoices['invoice_number'].tolist())
+        inv_row = conn.execute("SELECT * FROM invoices WHERE invoice_number = ?", (selected_inv,)).fetchone()
+        with st.form("edit_invoice_form"):
+            issue_date = st.date_input("Issue Date", value=date.fromisoformat(inv_row['issue_date']))
+            due_date = st.date_input("Due Date", value=date.fromisoformat(inv_row['due_date']))
+            total_amount = st.number_input("Total Amount", min_value=0.0, value=float(inv_row['total_amount']))
+            notes = st.text_area("Notes", value=inv_row['notes'])
+            submit_edit = st.form_submit_button("Update Invoice")
+        if submit_edit:
+            try:
+                new_balance = total_amount - float(inv_row['paid_amount'])
+                new_status = 'Fully Paid' if new_balance <= 0 else 'Partially Paid' if inv_row['paid_amount'] > 0 else 'Pending'
+                cur = conn.cursor()
+                cur.execute("""
+                    UPDATE invoices SET issue_date = ?, due_date = ?, total_amount = ?, balance_amount = ?, status = ?, notes = ?
+                    WHERE id = ?
+                """, (issue_date.isoformat(), due_date.isoformat(), total_amount, new_balance, new_status, notes, inv_row['id']))
+                conn.commit()
+                st.success("Invoice updated")
+                log_action("edit_invoice", f"Updated invoice {selected_inv}", st.session_state.user['username'])
+                safe_rerun()
+            except Exception as e:
+                st.error(f"Error updating invoice: {e}")
     conn.close()
