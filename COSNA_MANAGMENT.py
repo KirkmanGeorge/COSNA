@@ -856,10 +856,10 @@ elif page == "Students":
         if students.empty:
             st.info("No students available to delete")
         else:
-            selected = st.selectbox("Select Student to Delete", students.apply(lambda x: f"{x['name']} - {x['class_name']} (ID: {x['id']})", axis=1))
+            selected = st.selectbox("Select Student to Delete", students.apply(lambda x: f"{x['name']} - {x['class_name']} (ID: {x['id']})", axis=1), key="select_student_to_delete")
             student_id = int(selected.split("(ID: ")[1].replace(")", ""))
-            if st.checkbox("Confirm deletion"):
-                if st.button("Delete Student"):
+            if st.checkbox("Confirm deletion", key=f"confirm_delete_student_{student_id}"):
+                if st.button("Delete Student", key=f"delete_student_btn_{student_id}"):
                     try:
                         cur = conn.cursor()
                         cur.execute("DELETE FROM students WHERE id = ?", (student_id,))
@@ -1225,10 +1225,10 @@ elif page == "Uniforms":
         if categories_df.empty:
             st.info("No categories to delete")
         else:
-            selected_category = st.selectbox("Select Category to Delete", categories_df["category"].tolist())
+            selected_category = st.selectbox("Select Category to Delete", categories_df["category"].tolist(), key="select_uniform_cat_to_delete")
             cat_id = int(categories_df[categories_df["category"] == selected_category]["id"].iloc[0])
-            if st.checkbox("Confirm deletion"):
-                if st.button("Delete Category"):
+            if st.checkbox("Confirm deletion", key=f"confirm_delete_uniform_cat_{cat_id}"):
+                if st.button("Delete Category", key=f"delete_uniform_cat_btn_{cat_id}"):
                     try:
                         cur = conn.cursor()
                         cur.execute("DELETE FROM uniforms WHERE category_id = ?", (cat_id,))
@@ -1370,7 +1370,7 @@ elif page == "Finances":
             if incomes.empty:
                 st.info("No incomes to edit")
             else:
-                selected_inc = st.selectbox("Select Income by Receipt Number", incomes['receipt_number'].tolist())
+                selected_inc = st.selectbox("Select Income by Receipt Number", incomes['receipt_number'].tolist(), key="select_income_to_edit")
                 inc_row = incomes[incomes['receipt_number'] == selected_inc].iloc[0]
                 inc_id = int(inc_row['id'])
                 categories = pd.read_sql("SELECT id, name FROM expense_categories WHERE category_type = 'Income' ORDER BY name", conn)
@@ -1420,10 +1420,10 @@ elif page == "Finances":
         if incomes.empty:
             st.info("No incomes to delete")
         else:
-            selected_inc = st.selectbox("Select Income to Delete by Receipt Number", incomes['receipt_number'].tolist())
+            selected_inc = st.selectbox("Select Income to Delete by Receipt Number", incomes['receipt_number'].tolist(), key="select_income_to_delete")
             inc_id = int(incomes[incomes['receipt_number'] == selected_inc]['id'].iloc[0])
-            if st.checkbox("Confirm deletion"):
-                if st.button("Delete Income"):
+            if st.checkbox("Confirm deletion", key=f"confirm_delete_income_{inc_id}"):
+                if st.button("Delete Income", key=f"delete_income_btn_{inc_id}"):
                     try:
                         cur = conn.cursor()
                         cur.execute("DELETE FROM incomes WHERE id = ?", (inc_id,))
@@ -1445,7 +1445,7 @@ elif page == "Finances":
             if expenses.empty:
                 st.info("No expenses to edit")
             else:
-                selected_exp = st.selectbox("Select Expense by Voucher Number", expenses['voucher_number'].tolist())
+                selected_exp = st.selectbox("Select Expense by Voucher Number", expenses['voucher_number'].tolist(), key="select_expense_to_edit")
                 exp_row = expenses[expenses['voucher_number'] == selected_exp].iloc[0]
                 exp_id = int(exp_row['id'])
                 categories = pd.read_sql("SELECT id, name FROM expense_categories WHERE category_type = 'Expense' ORDER BY name", conn)
@@ -1495,10 +1495,10 @@ elif page == "Finances":
         if expenses.empty:
             st.info("No expenses to delete")
         else:
-            selected_exp = st.selectbox("Select Expense to Delete by Voucher Number", expenses['voucher_number'].tolist())
+            selected_exp = st.selectbox("Select Expense to Delete by Voucher Number", expenses['voucher_number'].tolist(), key="select_expense_to_delete")
             exp_id = int(expenses[expenses['voucher_number'] == selected_exp]['id'].iloc[0])
-            if st.checkbox("Confirm deletion"):
-                if st.button("Delete Expense"):
+            if st.checkbox("Confirm deletion", key=f"confirm_delete_expense_{exp_id}"):
+                if st.button("Delete Expense", key=f"delete_expense_btn_{exp_id}"):
                     try:
                         cur = conn.cursor()
                         cur.execute("DELETE FROM expenses WHERE id = ?", (exp_id,))
@@ -1719,17 +1719,17 @@ elif page == "Fee Management":
     with tab_generate:
         st.subheader("Generate Invoice")
         conn = get_db_connection()
-        students = pd.read_sql("SELECT s.id, s.name, c.name as class_name FROM students s LEFT JOIN classes c ON s.class_id = c.id ORDER BY s.name", conn)
+        students = pd.read_sql("SELECT s.id, s.name, c.name as class_name FROM students s JOIN classes c ON s.class_id = c.id ORDER BY s.name", conn)
         if students.empty:
             st.info("No students to invoice")
         else:
-            selected = st.selectbox("Select Student", students.apply(lambda x: f"{x['name']} - {x['class_name']} (ID: {x['id']})", axis=1))
+            selected = st.selectbox("Select Student", students.apply(lambda x: f"{x['name']} - {x['class_name']} (ID: {x['id']})", axis=1), key="select_student_for_invoice")
             student_id = int(selected.split("(ID: ")[1].replace(")", ""))
             fee_options = pd.read_sql("SELECT fs.id, c.name as class_name, fs.term, fs.academic_year, fs.total_fee FROM fee_structure fs JOIN classes c ON fs.class_id = c.id WHERE fs.class_id = (SELECT class_id FROM students WHERE id = ?) ORDER BY fs.academic_year DESC", conn, params=(student_id,))
             if fee_options.empty:
                 st.info("No fee structure for this student's class. Define fee structure first.")
             else:
-                chosen = st.selectbox("Choose Fee Structure", fee_options.apply(lambda x: f"{x['academic_year']} - {x['term']} (USh {x['total_fee']:,.0f})", axis=1))
+                chosen = st.selectbox("Choose Fee Structure", fee_options.apply(lambda x: f"{x['academic_year']} - {x['term']} (USh {x['total_fee']:,.0f})", axis=1), key="select_fee_structure")
                 idx = fee_options.index[fee_options.apply(lambda x: f"{x['academic_year']} - {x['term']} (USh {x['total_fee']:,.0f})", axis=1) == chosen][0]
                 fee_row = fee_options.loc[idx]
                 issue_date = st.date_input("Issue Date", date.today())
@@ -1763,7 +1763,7 @@ elif page == "Fee Management":
         if invoices.empty:
             st.info("No invoices to edit")
         else:
-            selected_inv = st.selectbox("Select Invoice by Number", invoices['invoice_number'].tolist())
+            selected_inv = st.selectbox("Select Invoice by Number", invoices['invoice_number'].tolist(), key="select_invoice_to_edit")
             inv_row = conn.execute("SELECT * FROM invoices WHERE invoice_number = ?", (selected_inv,)).fetchone()
             with st.form("edit_invoice_form"):
                 issue_date = st.date_input("Issue Date", value=date.fromisoformat(inv_row['issue_date']))
@@ -1797,10 +1797,10 @@ elif page == "Fee Management":
         if invoices.empty:
             st.info("No invoices to delete")
         else:
-            selected_inv = st.selectbox("Select Invoice to Delete by Number", invoices['invoice_number'].tolist())
+            selected_inv = st.selectbox("Select Invoice to Delete by Number", invoices['invoice_number'].tolist(), key="select_invoice_to_delete")
             inv_id = int(invoices[invoices['invoice_number'] == selected_inv]['id'].iloc[0])
-            if st.checkbox("Confirm deletion"):
-                if st.button("Delete Invoice"):
+            if st.checkbox("Confirm deletion", key=f"confirm_delete_invoice_{inv_id}"):
+                if st.button("Delete Invoice", key=f"delete_invoice_btn_{inv_id}"):
                     try:
                         cur = conn.cursor()
                         cur.execute("DELETE FROM invoices WHERE id = ?", (inv_id,))
