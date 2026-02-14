@@ -1910,14 +1910,20 @@ elif page == "Fee Management":
                         st.error(f"Error deleting invoice: {e}")
         conn.close()
 
-# ---------------------------
-# Terms Management
-# ---------------------------
+# ────────────────────────────────────────────────
+# Terms Management – FIXED VERSION
+# ────────────────────────────────────────────────
 elif page == "Terms Management":
     require_role(["Admin"])
     st.header("Terms Management")
     conn = get_db_connection()
-    tab_view, tab_add, tab_close, tab_edit = st.tabs(["View Terms", "Add New Term", "Close/Set Current Term", "Edit Term"])
+
+    tab_view, tab_add, tab_close, tab_edit = st.tabs([
+        "View Terms", 
+        "Add New Term", 
+        "Close/Set Current Term", 
+        "Edit Term"
+    ])
 
     with tab_view:
         st.subheader("All Terms")
@@ -1950,12 +1956,12 @@ elif page == "Terms Management":
             else:
                 try:
                     cur = conn.cursor()
-                    # Check for overlapping terms (simple check)
                     overlap = cur.execute("""
                         SELECT COUNT(*) FROM terms 
                         WHERE (start_date <= ? AND end_date >= ?) 
-                        OR (start_date <= ? AND end_date >= ?)
-                    """, (end_date, start_date, end_date, start_date)).fetchone()[0]
+                           OR (start_date <= ? AND end_date >= ?)
+                    """, (end_date.isoformat(), start_date.isoformat(), 
+                          end_date.isoformat(), start_date.isoformat())).fetchone()[0]
                     
                     if overlap > 0:
                         st.error("This date range overlaps with an existing term")
@@ -1963,15 +1969,16 @@ elif page == "Terms Management":
                         cur.execute("""
                             INSERT INTO terms (name, academic_year, start_date, end_date, is_current)
                             VALUES (?, ?, ?, ?, ?)
-                        """, (term_name, academic_year, start_date.isoformat(), end_date.isoformat(), 1 if make_current else 0))
+                        """, (term_name.strip(), academic_year.strip(), 
+                              start_date.isoformat(), end_date.isoformat(), 1 if make_current else 0))
                         
                         if make_current:
-                            # Set all others to not current
                             cur.execute("UPDATE terms SET is_current = 0 WHERE id != last_insert_rowid()")
                         
                         conn.commit()
                         st.success(f"Term '{term_name} {academic_year}' created successfully")
-                        log_action("create_term", f"Created term {term_name} {academic_year} ({start_date} to {end_date})", st.session_state.user['username'])
+                        log_action("create_term", f"Created term {term_name} {academic_year} ({start_date} to {end_date})", 
+                                   st.session_state.user['username'])
                         safe_rerun()
                 except Exception as e:
                     st.error(f"Error creating term: {str(e)}")
@@ -1980,14 +1987,15 @@ elif page == "Terms Management":
         st.subheader("Set/Close Current Term")
         current_term = conn.execute("SELECT * FROM terms WHERE is_current = 1").fetchone()
         if current_term:
-            st.info(f"Current active term: **{current_term['name']} {current_term['academic_year']}** ({current_term['start_date']} → {current_term['end_date']})")
+            st.info(f"Current active term: **{current_term['name']} {current_term['academic_year']}** "
+                    f"({current_term['start_date']} → {current_term['end_date']})")
         else:
             st.warning("No current term is set.")
 
         all_terms = pd.read_sql("SELECT id, name, academic_year FROM terms ORDER BY start_date DESC", conn)
         if not all_terms.empty:
             selected = st.selectbox(
-                "Select term to make current (or keep current one)",
+                "Select term to make current",
                 all_terms.apply(lambda x: f"{x['name']} {x['academic_year']} (ID: {x['id']})", axis=1)
             )
             term_id_to_set = int(selected.split("(ID: ")[1].replace(")", ""))
@@ -2000,7 +2008,8 @@ elif page == "Terms Management":
                     conn.commit()
                     st.success("Current term updated successfully")
                     st.session_state['term_id'] = term_id_to_set
-                    log_action("set_current_term", f"Set term ID {term_id_to_set} as current", st.session_state.user['username'])
+                    log_action("set_current_term", f"Set term ID {term_id_to_set} as current", 
+                               st.session_state.user['username'])
                     safe_rerun()
                 except Exception as e:
                     st.error(f"Error setting current term: {e}")
@@ -2015,43 +2024,66 @@ elif page == "Terms Management":
             term_id_edit = terms_list[terms_list['display'] == selected_edit]['id'].iloc[0]
             term_data = conn.execute("SELECT * FROM terms WHERE id = ?", (term_id_edit,)).fetchone()
             
-            with st.form("edit_term_form"):
-                term_options = ["Term 1", "Term 2", "Term 3"]
-                try:
-                    default_index = term_options.index(term_data['name'])
-                except ValueError:
-                    default_index = 0  # fallback to first option if value not found
-                    st.warning(f"Previous term name '{term_data['name']}' not in standard list – defaulting to Term 1")
-                edit_name = st.selectbox("Term Name", term_options, index=default_index)
-                edit_year = st.text_input("Academic Year", value=term_data['academic_year'])
-                edit_start = st.date_input("Start Date", value=date.fromisoformat(term_data['start_date']))
-                edit_end = st.date_input("End Date", value=date.fromisoformat(term_data['end_date']))
-                edit_current = st.checkbox("Mark as Current Term", value=bool(term_data['is_current']))
-                submit_edit_term = st.form_submit_button("Save Changes")
-
-            if submit_edit_term:
-                if edit_start >= edit_end:
-                    st.error("End date must be after start date")
-                else:
+            if term_data is None:
+                st.error("Selected term not found in database.")
+            else:
+                with st.form("edit_term_form"):
+                    term_options = ["Term 1", "Term 2", "Term 3"]
+                    
+                    current_name = (term_data['name'] or "").strip()
                     try:
-                        cur = conn.cursor()
-                        cur.execute("""
-                            UPDATE terms 
-                            SET name = ?, academic_year = ?, start_date = ?, end_date = ?, is_current = ?
-                            WHERE id = ?
-                        """, (edit_name, edit_year, edit_start.isoformat(), edit_end.isoformat(), 1 if edit_current else 0, term_id_edit))
-                        
-                        if edit_current:
-                            cur.execute("UPDATE terms SET is_current = 0 WHERE id != ?", (term_id_edit,))
-                        
-                        conn.commit()
-                        st.success("Term updated successfully")
-                        if edit_current:
-                            st.session_state['term_id'] = term_id_edit
-                        log_action("edit_term", f"Edited term ID {term_id_edit} to {edit_name} {edit_year}", st.session_state.user['username'])
-                        safe_rerun()
-                    except Exception as e:
-                        st.error(f"Error updating term: {e}")
+                        default_index = term_options.index(current_name)
+                    except ValueError:
+                        default_index = 0
+                        st.warning(
+                            f"Stored term name '{current_name}' is not one of the standard options "
+                            f"({', '.join(term_options)}). Defaulting to 'Term 1' for editing."
+                        )
+                    
+                    edit_name = st.selectbox("Term Name", term_options, index=default_index)
+                    edit_year = st.text_input("Academic Year", value=term_data['academic_year'] or "")
+                    edit_start = st.date_input(
+                        "Start Date", 
+                        value=date.fromisoformat(term_data['start_date']) if term_data['start_date'] else date.today()
+                    )
+                    edit_end = st.date_input(
+                        "End Date", 
+                        value=date.fromisoformat(term_data['end_date']) if term_data['end_date'] else date.today()
+                    )
+                    edit_current = st.checkbox("Mark as Current Term", value=bool(term_data['is_current']))
+                    submit_edit_term = st.form_submit_button("Save Changes")
+
+                if submit_edit_term:
+                    if edit_start >= edit_end:
+                        st.error("End date must be after start date")
+                    else:
+                        try:
+                            cur = conn.cursor()
+                            cur.execute("""
+                                UPDATE terms 
+                                SET name = ?, academic_year = ?, start_date = ?, end_date = ?, is_current = ?
+                                WHERE id = ?
+                            """, (
+                                edit_name.strip(), 
+                                edit_year.strip(), 
+                                edit_start.isoformat(), 
+                                edit_end.isoformat(), 
+                                1 if edit_current else 0, 
+                                term_id_edit
+                            ))
+                            
+                            if edit_current:
+                                cur.execute("UPDATE terms SET is_current = 0 WHERE id != ?", (term_id_edit,))
+                            
+                            conn.commit()
+                            st.success("Term updated successfully")
+                            if edit_current:
+                                st.session_state['term_id'] = term_id_edit
+                            log_action("edit_term", f"Edited term ID {term_id_edit} to {edit_name} {edit_year}", 
+                                       st.session_state.user['username'])
+                            safe_rerun()
+                        except Exception as e:
+                            st.error(f"Error updating term: {str(e)}")
 
     conn.close()
 
