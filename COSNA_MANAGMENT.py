@@ -10,6 +10,7 @@ Role-based access (Admin, Accountant, Clerk) with simple enforcement
 Cashbook (combined incomes/expenses running balance) view, updated to two-column cash book with cash and bank
 Robust DB initialization and safe migrations
 Editing and deleting capabilities for saved information (students, classes, uniforms, finances, etc.)
+User-selectable current term with defined periods (start/end dates) affecting all sections
 Notes:
 Save the school badge image as "school_badge.png" in the app folder or upload it on the login page.
 This file is intended to replace the previous script. Back up your DB before running.
@@ -277,6 +278,16 @@ def initialize_database():
             details TEXT,
             performed_by TEXT,
             performed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS terms (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            academic_year TEXT,
+            term TEXT CHECK(term IN ('Term 1','Term 2','Term 3')),
+            start_date DATE,
+            end_date DATE,
+            UNIQUE(academic_year, term)
         )
     ''')
     conn.commit()
@@ -567,6 +578,15 @@ if not st.session_state.user:
     st.stop()
 
 # ---------------------------
+# Get defined terms
+# ---------------------------
+def get_terms():
+    conn = get_db_connection()
+    df = pd.read_sql("SELECT id, academic_year, term, start_date, end_date FROM terms ORDER BY academic_year DESC, term DESC", conn)
+    conn.close()
+    return df
+
+# ---------------------------
 # Sidebar after login
 # ---------------------------
 with st.sidebar:
@@ -587,38 +607,20 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("Dashboard Filter")
     view_mode = st.radio("View Financials for", ["Current Term", "All Time"], index=0)
+    terms_df = get_terms()
+    if terms_df.empty:
+        st.warning("No terms defined. Define terms in Fee Management.")
+        selected_term_id = None
+        selected_term = None
+    else:
+        term_options = terms_df.apply(lambda x: f"{x['academic_year']} - {x['term']}", axis=1).tolist()
+        selected_term_str = st.selectbox("Select Current Term", term_options)
+        selected_idx = term_options.index(selected_term_str)
+        selected_term = terms_df.iloc[selected_idx]
+        selected_term_id = int(selected_term['id'])
 
-# ---------------------------
-# Determine current term/year
-# ---------------------------
-@st.cache_data(ttl=3600)
-def get_current_term_year():
-    conn = get_db_connection()
-    # Try latest from fee_structure
-    row = conn.execute("""
-        SELECT academic_year, term
-        FROM fee_structure
-        ORDER BY created_at DESC LIMIT 1
-    """).fetchone()
-
-    if not row:
-        # fallback to latest invoice
-        row = conn.execute("""
-            SELECT academic_year, term
-            FROM invoices
-            ORDER BY issue_date DESC LIMIT 1
-        """).fetchone()
-
-    conn.close()
-    if row:
-        return row['academic_year'], row['term']
-    return f"{date.today().year}/{date.today().year+1}", "Term 1"  # default if none
-
-# Initialize current term if not set
-if 'current_academic_year' not in st.session_state or 'current_term' not in st.session_state:
-    ay, tm = get_current_term_year()
-    st.session_state.current_academic_year = ay
-    st.session_state.current_term = tm
+    if 'selected_term' not in st.session_state:
+        st.session_state.selected_term = selected_term.to_dict() if selected_term is not None else None
 
 # ---------------------------
 # Main navigation
@@ -630,38 +632,45 @@ page = st.sidebar.radio("Menu", ["Dashboard", "Students", "Uniforms", "Finances"
 # ---------------------------
 if page == "Dashboard":
     conn = get_db_connection()
-    st.header(" Financial Overview")
+    st.header("Financial Overview")
 
     if view_mode == "Current Term":
-        ay = st.session_state.current_academic_year
-        tm = st.session_state.current_term
-        st.info(f"Showing data for {tm} {ay}. Change in sidebar for all time.")
-        inc_where = "WHERE academic_year = ? AND term = ?"
-        exp_where = "WHERE academic_year = ? AND term = ?"
-        out_where = "WHERE status IN ('Pending','Partially Paid') AND academic_year = ? AND term = ?"
-        params = (ay, tm)
+        if st.session_state.selected_term is None:
+            st.error("Select a term in the sidebar.")
+            st.stop()
+        ay = st.session_state.selected_term['academic_year']
+        tm = st.session_state.selected_term['term']
+        start_d = st.session_state.selected_term['start_date']
+        end_d = st.session_state.selected_term['end_date']
+        st.info(f"Showing data for {tm} {ay} ({start_d} to {end_d}). Change in sidebar.")
+        inc_where = "WHERE date BETWEEN ? AND ?"
+        exp_where = "WHERE date BETWEEN ? AND ?"
+        out_where = "WHERE academic_year = ? AND term = ? AND status IN ('Pending','Partially Paid')"
+        params_date = (start_d, end_d)
+        params_term = (ay, tm)
     else:
         st.info("Showing all-time financial overview")
         inc_where = ""
         exp_where = ""
         out_where = "WHERE status IN ('Pending','Partially Paid')"
-        params = ()
+        params_date = ()
+        params_term = ()
 
     col1, col2, col3, col4 = st.columns(4)
     try:
-        total_income = conn.execute(f"SELECT COALESCE(SUM(amount),0) as s FROM incomes {inc_where}", params).fetchone()["s"] or 0
+        total_income = conn.execute(f"SELECT COALESCE(SUM(amount),0) as s FROM incomes {inc_where}", params_date).fetchone()["s"] or 0
     except Exception:
         total_income = 0
     col1.metric("Total Income", f"USh {total_income:,.0f}")
     try:
-        total_expenses = conn.execute(f"SELECT COALESCE(SUM(amount),0) as s FROM expenses {exp_where}", params).fetchone()["s"] or 0
+        total_expenses = conn.execute(f"SELECT COALESCE(SUM(amount),0) as s FROM expenses {exp_where}", params_date).fetchone()["s"] or 0
     except Exception:
         total_expenses = 0
     col2.metric("Total Expenses", f"USh {total_expenses:,.0f}")
     net_balance = total_income - total_expenses
     col3.metric("Net Balance", f"USh {net_balance:,.0f}", delta=f"USh {net_balance:,.0f}")
     try:
-        outstanding_fees = conn.execute(f"SELECT COALESCE(SUM(balance_amount),0) as s FROM invoices {out_where}", params).fetchone()["s"] or 0
+        outstanding_fees = conn.execute(f"SELECT COALESCE(SUM(balance_amount),0) as s FROM invoices {out_where}", params_term).fetchone()["s"] or 0
     except Exception:
         outstanding_fees = 0
     col4.metric("Outstanding Fees", f"USh {outstanding_fees:,.0f}")
@@ -670,7 +679,7 @@ if page == "Dashboard":
     with colA:
         st.subheader("Recent Income (Last 5)")
         try:
-            df_inc = pd.read_sql("SELECT date as Date, receipt_number as 'Receipt No', amount as Amount, source as Source, payment_method as 'Payment Method', payer as Payer, description as Description FROM incomes ORDER BY date DESC LIMIT 5", conn)
+            df_inc = pd.read_sql(f"SELECT date as Date, receipt_number as 'Receipt No', amount as Amount, source as Source, payment_method as 'Payment Method', payer as Payer, description as Description FROM incomes {inc_where} ORDER BY date DESC LIMIT 5", conn, params=params_date)
             if df_inc.empty:
                 st.info("No income records yet")
             else:
@@ -680,12 +689,12 @@ if page == "Dashboard":
     with colB:
         st.subheader("Recent Expenses (Last 5)")
         try:
-            df_exp = pd.read_sql("""
+            df_exp = pd.read_sql(f"""
                 SELECT e.date as Date, e.voucher_number as 'Voucher No', e.amount as Amount, ec.name as Category, e.payment_method as 'Payment Method', e.payee as Payee, e.description as Description
                 FROM expenses e
                 LEFT JOIN expense_categories ec ON e.category_id = ec.id
-                ORDER BY e.date DESC LIMIT 5
-            """, conn)
+                {exp_where} ORDER BY e.date DESC LIMIT 5
+            """, conn, params=params_date)
             if df_exp.empty:
                 st.info("No expense records yet")
             else:
@@ -912,19 +921,27 @@ elif page == "Students":
     with tab_fees:
         conn = get_db_connection()
         st.subheader("Outstanding Fees Breakdown")
+        if view_mode == "Current Term" and st.session_state.selected_term:
+            ay = st.session_state.selected_term['academic_year']
+            tm = st.session_state.selected_term['term']
+            out_where = "WHERE academic_year = ? AND term = ? AND status IN ('Pending', 'Partially Paid')"
+            params = (ay, tm)
+        else:
+            out_where = "WHERE status IN ('Pending', 'Partially Paid')"
+            params = ()
         total_outstanding = conn.execute(
-            "SELECT COALESCE(SUM(balance_amount), 0) FROM invoices WHERE status IN ('Pending', 'Partially Paid')"
+            f"SELECT COALESCE(SUM(balance_amount), 0) FROM invoices {out_where}", params
         ).fetchone()[0]
         st.metric("Total Outstanding Fees", f"USh {total_outstanding:,.0f}")
-        class_df = pd.read_sql("""
+        class_df = pd.read_sql(f"""
             SELECT c.name as 'Class Name', COALESCE(SUM(i.balance_amount), 0) as 'Class Outstanding'
             FROM invoices i
             JOIN students s ON i.student_id = s.id
             JOIN classes c ON s.class_id = c.id
-            WHERE i.status IN ('Pending', 'Partially Paid')
+            {out_where}
             GROUP BY c.name
             ORDER BY 'Class Outstanding' DESC
-        """, conn)
+        """, conn, params=params)
         if class_df.empty:
             st.info("No outstanding fees at the moment.")
         else:
@@ -936,7 +953,8 @@ elif page == "Students":
                 format_func=lambda x: "— Select a class —" if x == "" else x
             )
             if selected_class:
-                student_df = pd.read_sql("""
+                student_params = params + (selected_class,)
+                student_df = pd.read_sql(f"""
                     SELECT s.name as Name, COALESCE(SUM(i.balance_amount), 0) as Outstanding
                     FROM invoices i
                     JOIN students s ON i.student_id = s.id
@@ -944,7 +962,7 @@ elif page == "Students":
                     WHERE c.name = ? AND i.status IN ('Pending', 'Partially Paid')
                     GROUP BY s.id, s.name
                     ORDER BY Outstanding DESC
-                """, conn, params=(selected_class,))
+                """, conn, params=student_params)
                 if student_df.empty:
                     st.info(f"No students with outstanding balances in {selected_class}")
                 else:
@@ -964,7 +982,13 @@ elif page == "Students":
             student_name = selected.split(" - ")[0]
             student_id = int(selected.split("(ID: ")[1].replace(")", ""))
             try:
-                invoices = pd.read_sql("SELECT * FROM invoices WHERE student_id = ? ORDER BY issue_date DESC", conn, params=(student_id,))
+                if view_mode == "Current Term" and st.session_state.selected_term:
+                    inv_where = "WHERE student_id = ? AND academic_year = ? AND term = ?"
+                    inv_params = (student_id, ay, tm)
+                else:
+                    inv_where = "WHERE student_id = ?"
+                    inv_params = (student_id,)
+                invoices = pd.read_sql(f"SELECT * FROM invoices {inv_where} ORDER BY issue_date DESC", conn, params=inv_params)
             except Exception:
                 invoices = pd.DataFrame()
             if invoices.empty:
@@ -983,7 +1007,7 @@ elif page == "Students":
                 st.dataframe(display_invoices, use_container_width=True)
                 st.subheader("Payment History")
                 try:
-                    payments = pd.read_sql("SELECT p.id, p.payment_date, p.amount, p.payment_method, p.receipt_number, p.reference_number, p.notes FROM payments p JOIN invoices i ON p.invoice_id = i.id WHERE i.student_id = ? ORDER BY p.payment_date DESC", conn, params=(student_id,))
+                    payments = pd.read_sql(f"SELECT p.id, p.payment_date, p.amount, p.payment_method, p.receipt_number, p.reference_number, p.notes FROM payments p JOIN invoices i ON p.invoice_id = i.id {inv_where} ORDER BY p.payment_date DESC", conn, params=inv_params)
                     if payments.empty:
                         st.info("No payments recorded for this student")
                     else:
@@ -1367,17 +1391,25 @@ elif page == "Finances":
             conn.close()
     with tab_reports:
         st.subheader("Transactions")
+        if view_mode == "Current Term" and st.session_state.selected_term:
+            start_d = st.session_state.selected_term['start_date']
+            end_d = st.session_state.selected_term['end_date']
+            tx_where = "WHERE date BETWEEN ? AND ?"
+            params = (start_d, end_d)
+        else:
+            tx_where = ""
+            params = ()
         conn = get_db_connection()
-        df_inc = pd.read_sql("""
+        df_inc = pd.read_sql(f"""
             SELECT i.date as Date, i.receipt_number as 'Receipt No', i.amount as Amount, i.source as Source, ec.name as Category, i.description as Description, i.payment_method as 'Payment Method', i.payer as Payer, i.received_by as 'Received By', i.created_by as 'Created By'
             FROM incomes i LEFT JOIN expense_categories ec ON i.category_id = ec.id
-            ORDER BY i.date DESC LIMIT 500
-        """, conn)
-        df_exp = pd.read_sql("""
+            {tx_where} ORDER BY i.date DESC LIMIT 500
+        """, conn, params=params)
+        df_exp = pd.read_sql(f"""
             SELECT e.date as Date, e.voucher_number as 'Voucher No', e.amount as Amount, ec.name as Category, e.description as Description, e.payment_method as 'Payment Method', e.payee as Payee, e.approved_by as 'Approved By', e.created_by as 'Created By'
             FROM expenses e LEFT JOIN expense_categories ec ON e.category_id = ec.id
-            ORDER BY e.date DESC LIMIT 500
-        """, conn)
+            {tx_where} ORDER BY e.date DESC LIMIT 500
+        """, conn, params=params)
         st.write("Recent Incomes")
         if df_inc.empty:
             st.info("No incomes recorded")
@@ -1593,8 +1625,14 @@ elif page == "Financial Report":
     conn = get_db_connection()
     st.subheader("Generate Report")
     report_type = st.selectbox("Report Type", ["Income vs Expense (date range)", "By Category", "Outstanding Invoices", "Student Payment Summary"])
-    start_date = st.date_input("Start Date", date.today().replace(day=1))
-    end_date = st.date_input("End Date", date.today())
+    if view_mode == "Current Term" and st.session_state.selected_term:
+        default_start = date.fromisoformat(st.session_state.selected_term['start_date'])
+        default_end = date.fromisoformat(st.session_state.selected_term['end_date'])
+    else:
+        default_start = date.today().replace(day=1)
+        default_end = date.today()
+    start_date = st.date_input("Start Date", default_start)
+    end_date = st.date_input("End Date", default_end)
     if start_date > end_date:
         st.error("Start date must be before end date")
     else:
@@ -1621,11 +1659,11 @@ elif page == "Financial Report":
                     df = pd.read_sql("""
                         SELECT ec.name as Category, SUM(COALESCE(i.amount,0)) as 'Total Income', SUM(COALESCE(e.amount,0)) as 'Total Expense'
                         FROM expense_categories ec
-                        LEFT JOIN incomes i ON i.category_id = ec.id
-                        LEFT JOIN expenses e ON e.category_id = ec.id
+                        LEFT JOIN incomes i ON i.category_id = ec.id AND i.date BETWEEN ? AND ?
+                        LEFT JOIN expenses e ON e.category_id = ec.id AND e.date BETWEEN ? AND ?
                         WHERE ec.category_type = ?
                         GROUP BY ec.name
-                    """, conn, params=(cat,))
+                    """, conn, params=(start_date.isoformat(), end_date.isoformat(), start_date.isoformat(), end_date.isoformat(), cat))
                     if df.empty:
                         st.info("No data for selected category type")
                     else:
@@ -1670,8 +1708,13 @@ elif page == "Cashbook":
     require_role(["Admin", "Accountant", "Clerk"])
     st.header("Two-Column Cashbook (Cash and Bank)")
     conn = get_db_connection()
-    start_date = st.date_input("Start Date", date.today().replace(day=1))
-    end_date = st.date_input("End Date", date.today())
+    if view_mode == "Current Term" and st.session_state.selected_term:
+        start_date = date.fromisoformat(st.session_state.selected_term['start_date'])
+        end_date = date.fromisoformat(st.session_state.selected_term['end_date'])
+        st.info(f"Showing for selected term: {st.session_state.selected_term['term']} {st.session_state.selected_term['academic_year']}")
+    else:
+        start_date = st.date_input("Start Date", date.today().replace(day=1))
+        end_date = st.date_input("End Date", date.today())
     if start_date > end_date:
         st.error("Start date must be before end date")
     else:
@@ -1750,7 +1793,51 @@ elif page == "Audit Log":
 elif page == "Fee Management":
     require_role(["Admin", "Accountant"])
     st.header("Fee Management")
-    tab_define, tab_generate, tab_edit_inv, tab_delete_inv = st.tabs(["Define Fee Structure", "Generate Invoice", "Edit Invoice", "Delete Invoice"])
+    tab_term, tab_define, tab_generate, tab_edit_inv, tab_delete_inv = st.tabs(["Define Terms", "Define Fee Structure", "Generate Invoice", "Edit Invoice", "Delete Invoice"])
+    with tab_term:
+        st.subheader("Define Academic Terms")
+        conn = get_db_connection()
+        with st.form("define_term_form"):
+            academic_year = st.text_input("Academic Year (e.g., 2025/2026)")
+            term = st.selectbox("Term", ["Term 1", "Term 2", "Term 3"])
+            start_date = st.date_input("Start Date")
+            end_date = st.date_input("End Date")
+            submit_term = st.form_submit_button("Create/Update Term")
+        if submit_term:
+            if start_date > end_date:
+                st.error("Start date must be before end date")
+            else:
+                try:
+                    cur = conn.cursor()
+                    existing = cur.execute("SELECT id FROM terms WHERE academic_year = ? AND term = ?", (academic_year, term)).fetchone()
+                    if existing:
+                        cur.execute("""
+                            UPDATE terms SET start_date = ?, end_date = ?
+                            WHERE id = ?
+                        """, (start_date.isoformat(), end_date.isoformat(), existing[0]))
+                        conn.commit()
+                        st.success("Term updated")
+                        log_action("update_term", f"Updated {term} {academic_year}", st.session_state.user['username'])
+                    else:
+                        cur.execute("""
+                            INSERT INTO terms (academic_year, term, start_date, end_date)
+                            VALUES (?, ?, ?, ?)
+                        """, (academic_year, term, start_date.isoformat(), end_date.isoformat()))
+                        conn.commit()
+                        st.success("Term defined")
+                        log_action("define_term", f"Defined {term} {academic_year}", st.session_state.user['username'])
+                    safe_rerun()
+                except sqlite3.IntegrityError:
+                    st.error("Term for this academic year already exists")
+                except Exception as e:
+                    st.error(f"Error defining term: {e}")
+        st.subheader("Existing Terms")
+        terms_df = get_terms()
+        if terms_df.empty:
+            st.info("No terms defined yet")
+        else:
+            st.dataframe(terms_df[['academic_year', 'term', 'start_date', 'end_date']], use_container_width=True)
+        conn.close()
     with tab_define:
         st.subheader("Define Fee Structure")
         conn = get_db_connection()
@@ -1762,7 +1849,7 @@ elif page == "Fee Management":
                 cls_name = st.selectbox("Class", classes["name"].tolist())
                 cls_id = int(classes[classes["name"] == cls_name]["id"].iloc[0])
                 term = st.selectbox("Term", ["Term 1","Term 2","Term 3"])
-                academic_year = st.text_input("Academic Year (e.g., 2025/2026)", value=st.session_state.current_academic_year)
+                academic_year = st.text_input("Academic Year (e.g., 2025/2026)")
                 tuition_fee = st.number_input("Tuition Fee", min_value=0.0, value=0.0, step=100.0)
                 uniform_fee = st.number_input("Uniform Fee", min_value=0.0, value=0.0, step=100.0)
                 activity_fee = st.number_input("Activity Fee", min_value=0.0, value=0.0, step=100.0)
@@ -1792,8 +1879,6 @@ elif page == "Fee Management":
                         conn.commit()
                         st.success("Fee structure created")
                         log_action("create_fee_structure", f"class {cls_name} term {term} year {academic_year} total {total_fee}", st.session_state.user['username'])
-                        st.session_state.current_academic_year = academic_year
-                        st.session_state.current_term = term
                         safe_rerun()
                 except Exception as e:
                     st.error(f"Error saving fee structure: {e}")
@@ -1896,5 +1981,5 @@ elif page == "Fee Management":
 #   Footer / Final Closing
 # ────────────────────────────────────────────────
 st.markdown("---")
-st.caption(f"© COSNA School Management System • {datetime.now().year} • Final Fixed Version")
+st.caption(f"© COSNA School Management System • {datetime.now().year} • FULL FIXED VERSION")
 st.caption("Developed for Cosna Daycare, Nursery, Day and Boarding Primary School Kiyinda-Mityana")
