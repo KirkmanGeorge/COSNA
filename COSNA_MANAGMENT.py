@@ -2016,7 +2016,13 @@ elif page == "Terms Management":
             term_data = conn.execute("SELECT * FROM terms WHERE id = ?", (term_id_edit,)).fetchone()
             
             with st.form("edit_term_form"):
-                edit_name = st.selectbox("Term Name", ["Term 1", "Term 2", "Term 3"], index=["Term 1", "Term 2", "Term 3"].index(term_data['name']))
+                term_options = ["Term 1", "Term 2", "Term 3"]
+                try:
+                    default_index = term_options.index(term_data['name'])
+                except ValueError:
+                    default_index = 0  # fallback to first option if value not found
+                    st.warning(f"Previous term name '{term_data['name']}' not in standard list – defaulting to Term 1")
+                edit_name = st.selectbox("Term Name", term_options, index=default_index)
                 edit_year = st.text_input("Academic Year", value=term_data['academic_year'])
                 edit_start = st.date_input("Start Date", value=date.fromisoformat(term_data['start_date']))
                 edit_end = st.date_input("End Date", value=date.fromisoformat(term_data['end_date']))
