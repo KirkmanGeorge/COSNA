@@ -619,9 +619,12 @@ with st.sidebar:
         selected_term = terms_df.iloc[selected_idx]
         selected_term_id = int(selected_term['id'])
 
-    if 'selected_term' not in st.session_state:
-        st.session_state.selected_term = selected_term.to_dict() if selected_term is not None else None
-
+    # Always update the stored selected term when the selectbox changes
+    if terms_df.empty:
+        st.session_state.selected_term = None
+    else:
+        # Convert the selected pandas Series to dict and store it
+        st.session_state.selected_term = selected_term.to_dict()
 # ---------------------------
 # Main navigation
 # ---------------------------
