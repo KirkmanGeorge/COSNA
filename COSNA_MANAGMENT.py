@@ -986,7 +986,7 @@ elif page == "Students":
                 st.dataframe(display_invoices, use_container_width=True)
                 st.subheader("Payment History")
                 try:
-                    payments = pd.read_sql(f"SELECT p.id, p.payment_date, p.amount, p.payment_method, p.receipt_number, p.reference_number, p.notes FROM payments p JOIN invoices i ON p.invoice_id = i.id {inv_where} ORDER BY p.payment_date DESC", conn, params=inv_params)
+                    payments = pd.read_sql(f"SELECT p.payment_date, p.amount, p.payment_method, p.receipt_number, p.reference_number, p.notes FROM payments p JOIN invoices i ON p.invoice_id = i.id {inv_where} ORDER BY p.payment_date DESC", conn, params=inv_params)
                     if payments.empty:
                         st.info("No payments recorded for this student")
                     else:
@@ -1660,7 +1660,7 @@ elif page == "Financial Report":
                         sel = st.selectbox("Select Student", students.apply(lambda x: f"{x['name']} (ID: {x['id']})", axis=1))
                         sid = int(sel.split("(ID: ")[1].replace(")", ""))
                         df_inv = pd.read_sql("SELECT invoice_number as 'Invoice No', academic_year as 'Academic Year', term as Term, total_amount as 'Total Amount', paid_amount as 'Paid Amount', balance_amount as 'Balance Amount', status as Status, issue_date as 'Issue Date', notes as Notes FROM invoices WHERE student_id = ? ORDER BY issue_date DESC", conn, params=(sid,))
-                        df_pay = pd.read_sql("SELECT payment_date as 'Payment Date', amount as Amount, payment_method as 'Payment Method', receipt_number as 'Receipt No', reference_number as 'Reference No', notes as Notes FROM payments p JOIN invoices i ON p.invoice_id = i.id WHERE i.student_id = ? ORDER BY payment_date DESC", conn, params=(sid,))
+                        df_pay = pd.read_sql("SELECT p.payment_date as 'Payment Date', p.amount as Amount, p.payment_method as 'Payment Method', p.receipt_number as 'Receipt No', p.reference_number as 'Reference No', p.notes as Notes FROM payments p JOIN invoices i ON p.invoice_id = i.id WHERE i.student_id = ? ORDER BY p.payment_date DESC", conn, params=(sid,))
                         st.subheader("Invoices")
                         if df_inv.empty:
                             st.info("No invoices for this student")
