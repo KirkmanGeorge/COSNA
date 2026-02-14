@@ -2147,8 +2147,8 @@ elif page == "Terms Management":
                         st.error("Selected term not found in database.")
         else:
             with st.form("edit_term_form"):
-            term_options = ["Term 1", "Term 2", "Term 3"]
-            current_name = (term_data['name'] or "").strip()
+                term_options = ["Term 1", "Term 2", "Term 3"]
+                current_name = (term_data['name'] or "").strip()
             try:
                 default_index = term_options.index(current_name)
                 except ValueError:
