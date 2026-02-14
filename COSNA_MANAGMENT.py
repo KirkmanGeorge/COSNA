@@ -8,14 +8,13 @@ Final improved single-file application with:
 - Inventory transactional integrity (atomic stock updates + checks)
 - Audit log and simple audit viewer
 - Role-based access (Admin, Accountant, Clerk) with simple enforcement
-- Cashbook (combined incomes/expenses running balance) view
+- Cashbook (combined incomes/expenses running balance) view, updated to two-column cash book with cash and bank
 - Robust DB initialization and safe migrations
-- Academic term configuration and global term filtering
+- Editing and deleting capabilities for saved information (students, classes, uniforms, finances, etc.)
 Notes:
 - Save the school badge image as "school_badge.png" in the app folder or upload it on the login page.
 - This file is intended to replace the previous script. Back up your DB before running.
 """
-
 import streamlit as st
 import sqlite3
 import pandas as pd
@@ -30,7 +29,6 @@ import difflib
 import hashlib
 import os
 import traceback
-
 # ---------------------------
 # Configuration
 # ---------------------------
@@ -38,13 +36,11 @@ APP_TITLE = "COSNA School Management System"
 DB_PATH = "cosna_school.db"
 REGISTRATION_FEE = 50000.0
 SIMILARITY_THRESHOLD = 0.82
-LOGO_FILENAME = "school_badge.png"  # place uploaded badge here
+LOGO_FILENAME = "school_badge.png" # place uploaded badge here
 PAGE_LAYOUT = "wide"
-
 st.set_page_config(page_title=APP_TITLE, layout=PAGE_LAYOUT, initial_sidebar_state="expanded")
 st.title(APP_TITLE)
 st.markdown("Students • Uniforms • Finances • Reports")
-
 # ---------------------------
 # Utilities
 # ---------------------------
@@ -52,62 +48,48 @@ def get_db_connection():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
-
 def normalize_text(s: str):
     if s is None:
         return ""
     return " ".join(s.strip().lower().split())
-
 def similar(a: str, b: str):
     if not a or not b:
         return 0.0
     return difflib.SequenceMatcher(None, normalize_text(a), normalize_text(b)).ratio()
-
 def is_near_duplicate(candidate: str, existing_list, threshold=SIMILARITY_THRESHOLD):
     candidate_n = normalize_text(candidate)
     for ex in existing_list:
         if similar(candidate_n, ex) >= threshold:
             return True, ex
     return False, None
-
 def hash_password(password: str, salt: str = None):
     if salt is None:
         salt = os.urandom(16).hex()
     hashed = hashlib.sha256((salt + password).encode('utf-8')).hexdigest()
     return f"{salt}${hashed}"
-
 def verify_password(stored: str, provided: str):
     try:
         salt, _ = stored.split('$', 1)
     except Exception:
         return False
     return hash_password(provided, salt) == stored
-
 def generate_code(prefix="RCPT"):
     day = datetime.now().strftime("%d")
     random_chars = ''.join(random.choices(string.ascii_uppercase + string.digits, k=2))
     return f"{prefix}-{day}{random_chars}"
-
 def generate_receipt_number(): return generate_code("RCPT")
 def generate_invoice_number(): return generate_code("INV")
 def generate_voucher_number(): return generate_code("VCH")
-
+# Safe rerun helper
 def safe_rerun():
     try:
-        if hasattr(st, "experimental_rerun") and callable(st.experimental_rerun):
-            st.experimental_rerun()
-        elif hasattr(st, "rerun") and callable(st.rerun):
+        if hasattr(st, "rerun") and callable(st.rerun):
             st.rerun()
         else:
             st.session_state['_needs_refresh'] = True
             st.stop()
     except Exception:
-        try:
-            st.session_state['_needs_refresh'] = True
-            st.stop()
-        except Exception:
-            pass
-
+        pass
 # ---------------------------
 # DB migration helpers
 # ---------------------------
@@ -116,7 +98,6 @@ def table_has_column(conn, table_name, column_name):
     cur.execute(f"PRAGMA table_info({table_name})")
     cols = [r[1] for r in cur.fetchall()]
     return column_name in cols
-
 def safe_alter_add_column(conn, table, column_def):
     col_name = column_def.split()[0]
     try:
@@ -127,15 +108,13 @@ def safe_alter_add_column(conn, table, column_def):
     except Exception:
         return False
     return False
-
 # ---------------------------
 # Initialize DB and seed
 # ---------------------------
 def initialize_database():
     conn = get_db_connection()
     cursor = conn.cursor()
-
-    # Core tables
+    # Core tables (unchanged)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -146,7 +125,6 @@ def initialize_database():
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS expense_categories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -154,9 +132,7 @@ def initialize_database():
             category_type TEXT DEFAULT 'Expense' CHECK(category_type IN ('Expense','Income'))
         )
     ''')
-
     cursor.execute('CREATE TABLE IF NOT EXISTS classes (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)')
-
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS students (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -171,7 +147,6 @@ def initialize_database():
             FOREIGN KEY(class_id) REFERENCES classes(id)
         )
     ''')
-
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS uniform_categories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -181,7 +156,6 @@ def initialize_database():
             is_shared INTEGER DEFAULT 0
         )
     ''')
-
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS uniforms (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -192,7 +166,6 @@ def initialize_database():
             FOREIGN KEY(category_id) REFERENCES uniform_categories(id)
         )
     ''')
-
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS expenses (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -210,7 +183,6 @@ def initialize_database():
             FOREIGN KEY(category_id) REFERENCES expense_categories(id)
         )
     ''')
-
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS incomes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -231,24 +203,12 @@ def initialize_database():
             FOREIGN KEY(category_id) REFERENCES expense_categories(id)
         )
     ''')
-
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS academic_terms (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            academic_year TEXT,
-            term TEXT CHECK(term IN ('Term 1','Term 2','Term 3')),
-            start_date DATE,
-            end_date DATE,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(academic_year, term)
-        )
-    ''')
-
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS fee_structure (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            term_id INTEGER,
             class_id INTEGER,
+            term TEXT CHECK(term IN ('Term 1','Term 2','Term 3')),
+            academic_year TEXT,
             tuition_fee REAL DEFAULT 0,
             uniform_fee REAL DEFAULT 0,
             activity_fee REAL DEFAULT 0,
@@ -257,20 +217,18 @@ def initialize_database():
             other_fee REAL DEFAULT 0,
             total_fee REAL DEFAULT 0,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(term_id) REFERENCES academic_terms(id),
-            FOREIGN KEY(class_id) REFERENCES classes(id),
-            UNIQUE(term_id, class_id)
+            FOREIGN KEY(class_id) REFERENCES classes(id)
         )
     ''')
-
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS invoices (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             invoice_number TEXT UNIQUE,
             student_id INTEGER,
-            term_id INTEGER,
             issue_date DATE,
             due_date DATE,
+            academic_year TEXT,
+            term TEXT,
             total_amount REAL,
             paid_amount REAL DEFAULT 0,
             balance_amount REAL,
@@ -278,11 +236,9 @@ def initialize_database():
             notes TEXT,
             created_by TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(student_id) REFERENCES students(id),
-            FOREIGN KEY(term_id) REFERENCES academic_terms(id)
+            FOREIGN KEY(student_id) REFERENCES students(id)
         )
     ''')
-
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS payments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -299,7 +255,6 @@ def initialize_database():
             FOREIGN KEY(invoice_id) REFERENCES invoices(id)
         )
     ''')
-
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS audit_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -309,10 +264,8 @@ def initialize_database():
             performed_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-
     conn.commit()
-
-    # Safe migrations (add columns if missing)
+    # Safe migrations (unchanged)
     safe_alter_add_column(conn, "incomes", "created_by TEXT")
     safe_alter_add_column(conn, "incomes", "received_by TEXT")
     safe_alter_add_column(conn, "incomes", "description TEXT")
@@ -325,9 +278,7 @@ def initialize_database():
     safe_alter_add_column(conn, "uniform_categories", "normalized_category TEXT")
     safe_alter_add_column(conn, "invoices", "created_by TEXT")
     safe_alter_add_column(conn, "payments", "created_by TEXT")
-    safe_alter_add_column(conn, "fee_structure", "term_id INTEGER")
-
-    # Backfill normalized fields
+    # Backfill normalized fields (unchanged)
     try:
         rows = conn.execute("SELECT id, category, normalized_category FROM uniform_categories").fetchall()
         for r in rows:
@@ -336,7 +287,6 @@ def initialize_database():
         conn.commit()
     except Exception:
         pass
-
     try:
         rows = conn.execute("SELECT id, name, normalized_name FROM students").fetchall()
         for r in rows:
@@ -345,8 +295,7 @@ def initialize_database():
         conn.commit()
     except Exception:
         pass
-
-    # Ensure uniforms rows exist for categories
+    # Ensure uniforms rows (unchanged)
     try:
         rows = conn.execute("SELECT id FROM uniform_categories").fetchall()
         for r in rows:
@@ -357,8 +306,7 @@ def initialize_database():
         conn.commit()
     except Exception:
         pass
-
-    # Seed default admin user if none exists
+    # Seed default admin (unchanged)
     try:
         cur = conn.execute("SELECT COUNT(*) as cnt FROM users")
         if cur.fetchone()["cnt"] == 0:
@@ -369,8 +317,7 @@ def initialize_database():
             conn.commit()
     except Exception:
         pass
-
-    # Seed uniform categories and expense categories
+    # Seed uniforms (unchanged)
     uniform_seeds = [
         ('Boys Main Shorts', 'boys', 0),
         ('Button Shirts Main', 'shared', 1),
@@ -398,12 +345,13 @@ def initialize_database():
                     conn.commit()
     except Exception:
         pass
-
+    # Seed expense categories (add Transfer In/Out)
     expense_seeds = [
         ('Medical', 'Expense'), ('Salaries', 'Expense'), ('Utilities', 'Expense'),
         ('Maintenance', 'Expense'), ('Supplies', 'Expense'), ('Transport', 'Expense'),
         ('Events', 'Expense'), ('Tuition Fees', 'Income'), ('Registration Fees', 'Income'),
-        ('Uniform Sales', 'Income'), ('Donations', 'Income'), ('Other Income', 'Income')
+        ('Uniform Sales', 'Income'), ('Donations', 'Income'), ('Other Income', 'Income'),
+        ('Transfer In', 'Income'), ('Transfer Out', 'Expense')
     ]
     try:
         for cat, cat_type in expense_seeds:
@@ -412,11 +360,8 @@ def initialize_database():
                 conn.commit()
     except Exception:
         pass
-
     conn.close()
-
 initialize_database()
-
 # ---------------------------
 # Audit logging
 # ---------------------------
@@ -429,7 +374,6 @@ def log_action(action, details="", performed_by="system"):
         conn.close()
     except Exception:
         pass
-
 # ---------------------------
 # Authentication
 # ---------------------------
@@ -440,16 +384,13 @@ def get_user(username):
     row = cur.fetchone()
     conn.close()
     return row
-
 if 'user' not in st.session_state:
     st.session_state.user = None
-
 # ---------------------------
 # Logo handling
 # ---------------------------
 def logo_exists():
     return os.path.exists(LOGO_FILENAME)
-
 def save_uploaded_logo(uploaded_file):
     try:
         with open(LOGO_FILENAME, "wb") as f:
@@ -457,7 +398,6 @@ def save_uploaded_logo(uploaded_file):
         return True
     except Exception:
         return False
-
 # ---------------------------
 # Export helpers (Excel & PDF landscape)
 # ---------------------------
@@ -467,12 +407,25 @@ def df_to_excel_bytes(df: pd.DataFrame, sheet_name="Sheet1"):
         df.to_excel(writer, sheet_name=sheet_name, index=False)
     buf.seek(0)
     return buf
-
+def draw_wrapped_text(c, text, x, y, width, font='Times-Roman', size=8):
+    c.setFont(font, size)
+    lines = []
+    line = []
+    for word in text.split():
+        if c.stringWidth(' '.join(line + [word])) <= width:
+            line.append(word)
+        else:
+            lines.append(' '.join(line))
+            line = [word]
+    lines.append(' '.join(line))
+    for l in lines:
+        c.drawString(x, y, l)
+        y -= size + 1 # tighter spacing
+    return y
 def dataframe_to_pdf_bytes_landscape(df: pd.DataFrame, title="Report", logo_path=None):
     buf = BytesIO()
     c = canvas.Canvas(buf, pagesize=landscape(letter))
     width, height = landscape(letter)
-
     # Draw logo if available
     y_top = height - 30
     title_x = 40
@@ -489,39 +442,42 @@ def dataframe_to_pdf_bytes_landscape(df: pd.DataFrame, title="Report", logo_path
             title_x = 40 + draw_w + 10
         except Exception:
             title_x = 40
-
-    c.setFont("Helvetica-Bold", 14)
+    c.setFont("Times-Bold", 14)
     c.drawString(title_x, y_top, title)
-    c.setFont("Helvetica", 9)
-    y = y_top - draw_h - 30  # Adjusted to prevent overlap
-
+    c.setFont("Times-Roman", 8)
+    y = y_top - draw_h - 30
     cols = list(df.columns)
     usable_width = width - 80
-    col_width = max(80, usable_width / max(1, len(cols)))
+    col_width = usable_width / max(1, len(cols))
     # Header
     for i, col in enumerate(cols):
         c.drawString(40 + i * col_width, y, str(col))
-    y -= 14
+    y -= 12
     # Rows
     for _, row in df.iterrows():
         if y < 40:
             c.showPage()
             y = height - 40
+        row_y = y
         for i, col in enumerate(cols):
-            text = str(row[col])
-            if len(text) > 120:
-                text = text[:117] + "..."
-            c.drawString(40 + i * col_width, y, text)
-        y -= 12
-
+            value = row[col]
+            if isinstance(value, (int, float)):
+                if 'amount' in col.lower() or 'fee' in col.lower() or 'balance' in col.lower():
+                    text = f"{value:,.0f}"
+                else:
+                    text = str(value)
+            else:
+                text = str(value)
+            temp_y = draw_wrapped_text(c, text, 40 + i * col_width, row_y, col_width - 10)
+            y = min(y, temp_y - 12) # adjust for next row
+        y -= 12 # extra row spacing if needed
     # Footer
-    c.setFont("Helvetica", 8)
-    c.drawString(40, 20, f"Generated: {datetime.now().isoformat()}  •  {APP_TITLE}")
+    c.setFont("Times-Roman", 7)
+    c.drawString(40, 20, f"Generated: {datetime.now().isoformat()} • {APP_TITLE}")
     c.showPage()
     c.save()
     buf.seek(0)
     return buf
-
 def download_options(df: pd.DataFrame, filename_base="report", title="Report"):
     col1, col2 = st.columns([1,1])
     with col1:
@@ -530,7 +486,6 @@ def download_options(df: pd.DataFrame, filename_base="report", title="Report"):
     with col2:
         pdf_buf = dataframe_to_pdf_bytes_landscape(df, title=title, logo_path=LOGO_FILENAME if logo_exists() else None)
         st.download_button("Download PDF (Landscape)", pdf_buf, f"{filename_base}.pdf", "application/pdf")
-
 # ---------------------------
 # Role-based access helper
 # ---------------------------
@@ -542,7 +497,6 @@ def require_role(allowed_roles):
     if user.get('role') not in allowed_roles:
         st.error("You do not have permission to access this section")
         st.stop()
-
 # ---------------------------
 # Login page (isolated)
 # ---------------------------
@@ -581,11 +535,10 @@ def show_login_page():
                         safe_rerun()
                     else:
                         st.error("Invalid credentials")
-
+# If not logged in, show only login page
 if not st.session_state.user:
     show_login_page()
     st.stop()
-
 # ---------------------------
 # Sidebar after login
 # ---------------------------
@@ -603,49 +556,10 @@ with st.sidebar:
         log_action("logout", f"user {uname} logged out", uname)
         st.session_state.user = None
         safe_rerun()
-
-# ---------------------------
-# Global Term Selector in Sidebar
-# ---------------------------
-conn_global = get_db_connection()
-terms_df = pd.read_sql("""
-    SELECT id, academic_year, term, start_date, end_date,
-           CASE WHEN date('now') > end_date THEN 'Closed' ELSE 'Active' END as status
-    FROM academic_terms
-    ORDER BY academic_year DESC, term DESC
-""", conn_global)
-conn_global.close()
-
-if terms_df.empty:
-    st.sidebar.warning("No academic terms configured yet. Go to Fee Management → Configure Academic Terms.")
-    st.session_state['selected_term_id'] = None
-    st.session_state['selected_term_label'] = "No term selected"
-else:
-    term_labels = terms_df.apply(
-        lambda r: f"{r['term']} {r['academic_year']} ({r['status']})", axis=1
-    ).tolist()
-    default_index = 0  # most recent term
-    selected_index = st.sidebar.selectbox(
-        "Current Term for Display",
-        range(len(term_labels)),
-        index=default_index,
-        format_func=lambda i: term_labels[i]
-    )
-    selected_term_row = terms_df.iloc[selected_index]
-    st.session_state['selected_term_id'] = selected_term_row['id']
-    st.session_state['selected_term_label'] = term_labels[selected_index]
-
 # ---------------------------
 # Main navigation
 # ---------------------------
 page = st.sidebar.radio("Menu", ["Dashboard", "Students", "Uniforms", "Finances", "Financial Report", "Fee Management", "Cashbook", "Audit Log"])
-
-# Helper to get term filter SQL and params
-def get_term_filter():
-    if st.session_state.get('selected_term_id'):
-        return " AND term_id = ?", [st.session_state['selected_term_id']]
-    return "", []
-
 # ---------------------------
 # Dashboard
 # ---------------------------
@@ -653,35 +567,28 @@ if page == "Dashboard":
     conn = get_db_connection()
     st.header("📊 Financial Overview")
     col1, col2, col3, col4 = st.columns(4)
-
-    term_sql, term_p = get_term_filter()
-
     try:
-        total_income = conn.execute(f"SELECT COALESCE(SUM(amount),0) as s FROM incomes WHERE 1=1{term_sql}", term_p).fetchone()["s"] or 0
+        total_income = conn.execute("SELECT COALESCE(SUM(amount),0) as s FROM incomes").fetchone()["s"] or 0
     except Exception:
         total_income = 0
     col1.metric("Total Income", f"USh {total_income:,.0f}")
-
     try:
         total_expenses = conn.execute("SELECT COALESCE(SUM(amount),0) as s FROM expenses").fetchone()["s"] or 0
     except Exception:
         total_expenses = 0
     col2.metric("Total Expenses", f"USh {total_expenses:,.0f}")
-
     net_balance = total_income - total_expenses
     col3.metric("Net Balance", f"USh {net_balance:,.0f}", delta=f"USh {net_balance:,.0f}")
-
     try:
-        outstanding_fees = conn.execute(f"SELECT COALESCE(SUM(balance_amount),0) as s FROM invoices WHERE status IN ('Pending','Partially Paid'){term_sql}", term_p).fetchone()["s"] or 0
+        outstanding_fees = conn.execute("SELECT COALESCE(SUM(balance_amount),0) as s FROM invoices WHERE status IN ('Pending','Partially Paid')").fetchone()["s"] or 0
     except Exception:
         outstanding_fees = 0
     col4.metric("Outstanding Fees", f"USh {outstanding_fees:,.0f}")
-
     colA, colB = st.columns(2)
     with colA:
         st.subheader("Recent Income (Last 5)")
         try:
-            df_inc = pd.read_sql(f"SELECT date, amount, source, payer FROM incomes WHERE 1=1{term_sql} ORDER BY date DESC LIMIT 5", conn, params=term_p)
+            df_inc = pd.read_sql("SELECT date as Date, receipt_number as 'Receipt No', amount as Amount, source as Source, payment_method as 'Payment Method', payer as Payer, description as Description FROM incomes ORDER BY date DESC LIMIT 5", conn)
             if df_inc.empty:
                 st.info("No income records yet")
             else:
@@ -691,45 +598,48 @@ if page == "Dashboard":
     with colB:
         st.subheader("Recent Expenses (Last 5)")
         try:
-            df_exp = pd.read_sql("SELECT e.date, e.amount, ec.name as category, e.payee FROM expenses e LEFT JOIN expense_categories ec ON e.category_id = ec.id ORDER BY e.date DESC LIMIT 5", conn)
+            df_exp = pd.read_sql("""
+                SELECT e.date as Date, e.voucher_number as 'Voucher No', e.amount as Amount, ec.name as Category, e.payment_method as 'Payment Method', e.payee as Payee, e.description as Description
+                FROM expenses e
+                LEFT JOIN expense_categories ec ON e.category_id = ec.id
+                ORDER BY e.date DESC LIMIT 5
+            """, conn)
             if df_exp.empty:
                 st.info("No expense records yet")
             else:
                 st.dataframe(df_exp, use_container_width=True)
         except Exception:
             st.info("No expense records yet or error loading expenses")
-
     st.subheader("Monthly Financial Summary (Last 12 months)")
     try:
         df_monthly = pd.read_sql("""
-            SELECT strftime('%Y-%m', date) as month, SUM(amount) as total_amount, 'Income' as type
+            SELECT strftime('%Y-%m', date) as Month, SUM(amount) as 'Total Amount', 'Income' as Type
             FROM incomes
             GROUP BY strftime('%Y-%m', date)
             UNION ALL
-            SELECT strftime('%Y-%m', date) as month, SUM(amount) as total_amount, 'Expense' as type
+            SELECT strftime('%Y-%m', date) as Month, SUM(amount) as 'Total Amount', 'Expense' as Type
             FROM expenses
             GROUP BY strftime('%Y-%m', date)
-            ORDER BY month DESC
+            ORDER BY Month DESC
             LIMIT 24
         """, conn)
         if df_monthly.empty:
             st.info("No monthly data available")
         else:
-            df_pivot = df_monthly.pivot_table(index='month', columns='type', values='total_amount', aggfunc='sum').fillna(0)
+            df_pivot = df_monthly.pivot_table(index='Month', columns='Type', values='Total Amount', aggfunc='sum').fillna(0)
             df_pivot['Net Balance'] = df_pivot.get('Income', 0) - df_pivot.get('Expense', 0)
             st.dataframe(df_pivot, use_container_width=True)
             download_options(df_pivot.reset_index(), filename_base="monthly_financial_summary", title="Monthly Financial Summary")
     except Exception:
         st.info("No monthly data available")
     conn.close()
-
 # ---------------------------
 # Students
 # ---------------------------
 elif page == "Students":
     st.header("Students")
-    tab_view, tab_add, tab_fees, tab_classes = st.tabs(["View & Export", "Add Student", "Student Fees", "Manage Classes"])
-
+    tab_view, tab_add, tab_edit, tab_delete, tab_fees = st.tabs(["View & Export", "Add Student", "Edit Student", "Delete Student", "Student Fees"])
+    # View & Export
     with tab_view:
         conn = get_db_connection()
         try:
@@ -739,21 +649,14 @@ elif page == "Students":
         selected_class = st.selectbox("Filter by Class", classes)
         student_types = ["All Types", "New", "Returning"]
         selected_type = st.selectbox("Filter by Student Type", student_types)
-
         try:
-            cursor = conn.cursor()
-            cursor.execute("PRAGMA table_info(students)")
-            columns = [col[1] for col in cursor.fetchall()]
-            if 'student_type' in columns:
-                query = "SELECT s.id, s.name, s.age, s.enrollment_date, c.name AS class_name, s.student_type, s.registration_fee_paid FROM students s LEFT JOIN classes c ON s.class_id = c.id"
-            else:
-                query = "SELECT s.id, s.name, s.age, s.enrollment_date, c.name AS class_name FROM students s LEFT JOIN classes c ON s.class_id = c.id"
+            query = "SELECT s.id as ID, s.name as Name, s.age as Age, s.enrollment_date as 'Enrollment Date', c.name AS 'Class Name', s.student_type as 'Student Type', s.registration_fee_paid as 'Registration Fee Paid' FROM students s LEFT JOIN classes c ON s.class_id = c.id"
             conditions = []
             params = []
             if selected_class != "All Classes":
                 conditions.append("c.name = ?")
                 params.append(selected_class)
-            if selected_type != "All Types" and 'student_type' in columns:
+            if selected_type != "All Types":
                 conditions.append("s.student_type = ?")
                 params.append(selected_type)
             if conditions:
@@ -767,10 +670,31 @@ elif page == "Students":
         except Exception:
             st.info("No student records yet or error loading data")
         conn.close()
-
+    # Add Student
     with tab_add:
         st.subheader("Add Student")
         conn = get_db_connection()
+        with st.expander("➕ Add a new class (if not in list)", expanded=False):
+            new_class_name = st.text_input("New Class Name", key="new_class_input", placeholder="e.g. P.4, S.1 Gold, Baby")
+            if st.button("Create Class", key="create_class_btn", use_container_width=True):
+                if not new_class_name.strip():
+                    st.error("Enter class name")
+                else:
+                    try:
+                        exists = conn.execute("SELECT 1 FROM classes WHERE LOWER(name) = LOWER(?)", (new_class_name.strip(),)).fetchone()
+                        if exists:
+                            st.error(f"Class '{new_class_name}' already exists")
+                        else:
+                            cur = conn.cursor()
+                            cur.execute("INSERT INTO classes (name) VALUES (?)", (new_class_name.strip(),))
+                            conn.commit()
+                            st.success(f"Class '{new_class_name}' created")
+                            log_action("add_class", f"Created class: {new_class_name}", st.session_state.user['username'])
+                            safe_rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("Class name already exists (case-sensitive conflict)")
+                    except Exception as e:
+                        st.error(f"Error creating class: {str(e)}")
         with st.form("add_student_form"):
             col1, col2 = st.columns(2)
             with col1:
@@ -827,88 +751,171 @@ elif page == "Students":
                     except Exception as e:
                         st.error(f"Error adding student: {e}")
         conn.close()
-
+    # Edit Student
+    with tab_edit:
+        st.subheader("Edit Student")
+        conn = get_db_connection()
+        students = pd.read_sql("SELECT s.id, s.name, c.name as class_name FROM students s LEFT JOIN classes c ON s.class_id = c.id ORDER BY s.name", conn)
+        if students.empty:
+            st.info("No students available to edit")
+        else:
+            selected = st.selectbox("Select Student to Edit", students.apply(lambda x: f"{x['name']} - {x['class_name']} (ID: {x['id']})", axis=1))
+            student_id = int(selected.split("(ID: ")[1].replace(")", ""))
+            student_row = conn.execute("SELECT * FROM students WHERE id = ?", (student_id,)).fetchone()
+            with st.form("edit_student_form"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    name = st.text_input("Full Name", value=student_row['name'])
+                    age = st.number_input("Age", min_value=3, max_value=30, value=student_row['age'])
+                    enroll_date = st.date_input("Enrollment Date", value=date.fromisoformat(student_row['enrollment_date']))
+                with col2:
+                    cls_df = pd.read_sql("SELECT id, name FROM classes ORDER BY name", conn)
+                    cls_options = cls_df["name"].tolist() if not cls_df.empty else []
+                    current_cls_name = conn.execute("SELECT name FROM classes WHERE id = ?", (student_row['class_id'],)).fetchone()[0]
+                    cls_name = st.selectbox("Class", cls_options, index=cls_options.index(current_cls_name) if current_cls_name in cls_options else 0)
+                    cls_id = int(cls_df[cls_df["name"] == cls_name]["id"].iloc[0])
+                    student_type = st.radio("Student Type", ["New", "Returning"], index=0 if student_row['student_type'] == "New" else 1)
+                submitted = st.form_submit_button("Update Student")
+            if submitted:
+                if not name:
+                    st.error("Provide student name")
+                else:
+                    try:
+                        existing = [r["normalized_name"] for r in conn.execute("SELECT normalized_name FROM students WHERE id != ?", (student_id,)).fetchall() if r["normalized_name"]]
+                        nname = normalize_text(name)
+                        dup, match = is_near_duplicate(nname, existing)
+                        if dup:
+                            st.warning(f"A similar student already exists: '{match}'. Please verify before updating.")
+                        else:
+                            cur = conn.cursor()
+                            cur.execute("""
+                                UPDATE students SET name = ?, normalized_name = ?, age = ?, enrollment_date = ?, class_id = ?, student_type = ?
+                                WHERE id = ?
+                            """, (name.strip(), nname, int(age), enroll_date.isoformat(), cls_id, student_type, student_id))
+                            conn.commit()
+                            st.success("Student updated successfully")
+                            log_action("edit_student", f"Updated student {name} (ID: {student_id})", st.session_state.user['username'])
+                            safe_rerun()
+                    except Exception as e:
+                        st.error(f"Error updating student: {e}")
+        conn.close()
+    # Delete Student
+    with tab_delete:
+        require_role(["Admin"])
+        st.subheader("Delete Student")
+        st.warning("Deleting a student may affect related records like invoices and payments. Proceed with caution.")
+        conn = get_db_connection()
+        students = pd.read_sql("SELECT s.id, s.name, c.name as class_name FROM students s LEFT JOIN classes c ON s.class_id = c.id ORDER BY s.name", conn)
+        if students.empty:
+            st.info("No students available to delete")
+        else:
+            selected = st.selectbox("Select Student to Delete", students.apply(lambda x: f"{x['name']} - {x['class_name']} (ID: {x['id']})", axis=1), key="select_student_to_delete")
+            student_id = int(selected.split("(ID: ")[1].replace(")", ""))
+            if st.checkbox("Confirm deletion", key=f"confirm_delete_student_{student_id}"):
+                if st.button("Delete Student", key=f"delete_student_btn_{student_id}"):
+                    try:
+                        cur = conn.cursor()
+                        cur.execute("DELETE FROM students WHERE id = ?", (student_id,))
+                        conn.commit()
+                        st.success("Student deleted successfully")
+                        log_action("delete_student", f"Deleted student ID: {student_id}", st.session_state.user['username'])
+                        safe_rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("Cannot delete student due to related records (e.g., invoices, payments). Delete those first.")
+                    except Exception as e:
+                        st.error(f"Error deleting student: {e}")
+        conn.close()
+    # Student Fees
     with tab_fees:
         conn = get_db_connection()
-
         st.subheader("Outstanding Fees Breakdown")
-
-        term_sql, term_p = get_term_filter()
-
-        total_outstanding = conn.execute(f"""
-            SELECT COALESCE(SUM(i.balance_amount), 0)
-            FROM invoices i
-            WHERE i.status IN ('Pending', 'Partially Paid'){term_sql}
-        """, term_p).fetchone()[0]
+        total_outstanding = conn.execute(
+            "SELECT COALESCE(SUM(balance_amount), 0) FROM invoices WHERE status IN ('Pending', 'Partially Paid')"
+        ).fetchone()[0]
         st.metric("Total Outstanding Fees", f"USh {total_outstanding:,.0f}")
-
-        class_df = pd.read_sql(f"""
-            SELECT c.name as class_name, COALESCE(SUM(i.balance_amount), 0) as class_outstanding
+        class_df = pd.read_sql("""
+            SELECT c.name as 'Class Name', COALESCE(SUM(i.balance_amount), 0) as 'Class Outstanding'
             FROM invoices i
             JOIN students s ON i.student_id = s.id
             JOIN classes c ON s.class_id = c.id
-            WHERE i.status IN ('Pending', 'Partially Paid'){term_sql}
+            WHERE i.status IN ('Pending', 'Partially Paid')
             GROUP BY c.name
-            ORDER BY class_outstanding DESC
-        """, conn, params=term_p)
-
+            ORDER BY 'Class Outstanding' DESC
+        """, conn)
         if class_df.empty:
-            st.info("No outstanding fees in the selected term.")
+            st.info("No outstanding fees at the moment.")
         else:
             st.dataframe(class_df, hide_index=True, use_container_width=True)
-            download_options(class_df, "outstanding_by_class", "Outstanding Fees by Class")
-
+            download_options(class_df, filename_base="outstanding_by_class", title="Outstanding Fees by Class")
             selected_class = st.selectbox(
                 "Select Class to View Student Details",
-                [""] + class_df['class_name'].tolist(),
+                [""] + class_df['Class Name'].tolist(),
                 format_func=lambda x: "— Select a class —" if x == "" else x
             )
-
             if selected_class:
-                student_df = pd.read_sql(f"""
-                    SELECT s.name, COALESCE(SUM(i.balance_amount), 0) as outstanding
+                student_df = pd.read_sql("""
+                    SELECT s.name as Name, COALESCE(SUM(i.balance_amount), 0) as Outstanding
                     FROM invoices i
                     JOIN students s ON i.student_id = s.id
                     JOIN classes c ON s.class_id = c.id
-                    WHERE c.name = ? AND i.status IN ('Pending', 'Partially Paid'){term_sql}
+                    WHERE c.name = ? AND i.status IN ('Pending', 'Partially Paid')
                     GROUP BY s.id, s.name
-                    ORDER BY outstanding DESC
-                """, conn, params=[selected_class] + term_p)
-
+                    ORDER BY Outstanding DESC
+                """, conn, params=(selected_class,))
                 if student_df.empty:
                     st.info(f"No students with outstanding balances in {selected_class}")
                 else:
                     st.subheader(f"Students with Outstanding Balances in {selected_class}")
                     st.dataframe(student_df, hide_index=True, use_container_width=True)
-                    download_options(student_df, f"outstanding_students_{selected_class.replace(' ', '_')}", f"Outstanding Students in {selected_class}")
-
+                    download_options(
+                        student_df,
+                        filename_base=f"outstanding_students_{selected_class.replace(' ', '_')}",
+                        title=f"Outstanding Students in {selected_class}"
+                    )
         st.subheader("Student Fee Management")
         students = pd.read_sql("SELECT s.id, s.name, c.name as class_name FROM students s LEFT JOIN classes c ON s.class_id = c.id ORDER BY s.name", conn)
         if students.empty:
             st.info("No students available")
         else:
             selected = st.selectbox("Select Student", students.apply(lambda x: f"{x['name']} - {x['class_name']} (ID: {x['id']})", axis=1))
+            student_name = selected.split(" - ")[0]
             student_id = int(selected.split("(ID: ")[1].replace(")", ""))
             try:
-                invoices = pd.read_sql(f"SELECT * FROM invoices WHERE student_id = ?{term_sql} ORDER BY issue_date DESC", conn, params=[student_id] + term_p)
+                invoices = pd.read_sql("SELECT * FROM invoices WHERE student_id = ? ORDER BY issue_date DESC", conn, params=(student_id,))
             except Exception:
                 invoices = pd.DataFrame()
             if invoices.empty:
-                st.info("No invoices for this student in selected term")
+                st.info("No invoices for this student")
             else:
-                st.dataframe(invoices[['invoice_number','issue_date','due_date','total_amount','paid_amount','balance_amount','status']], use_container_width=True)
-
+                display_invoices = invoices[['invoice_number', 'issue_date', 'due_date', 'total_amount', 'paid_amount', 'balance_amount', 'status', 'notes']].rename(columns={
+                    'invoice_number': 'Invoice No',
+                    'issue_date': 'Issue Date',
+                    'due_date': 'Due Date',
+                    'total_amount': 'Total Amount',
+                    'paid_amount': 'Paid Amount',
+                    'balance_amount': 'Balance Amount',
+                    'status': 'Status',
+                    'notes': 'Notes'
+                })
+                st.dataframe(display_invoices, use_container_width=True)
                 st.subheader("Payment History")
                 try:
-                    payments = pd.read_sql(f"SELECT p.payment_date, p.amount, p.payment_method, p.receipt_number, p.reference_number, p.notes FROM payments p JOIN invoices i ON p.invoice_id = i.id WHERE i.student_id = ?{term_sql} ORDER BY p.payment_date DESC", conn, params=[student_id] + term_p)
+                    payments = pd.read_sql("SELECT p.id, p.payment_date, p.amount, p.payment_method, p.receipt_number, p.reference_number, p.notes FROM payments p JOIN invoices i ON p.invoice_id = i.id WHERE i.student_id = ? ORDER BY p.payment_date DESC", conn, params=(student_id,))
                     if payments.empty:
-                        st.info("No payments recorded for this student in selected term")
+                        st.info("No payments recorded for this student")
                     else:
-                        st.dataframe(payments, use_container_width=True)
-                        download_options(payments, f"payments_student_{student_id}", f"Payments for Student {student_id}")
+                        display_payments = payments.rename(columns={
+                            'payment_date': 'Payment Date',
+                            'amount': 'Amount',
+                            'payment_method': 'Payment Method',
+                            'receipt_number': 'Receipt No',
+                            'reference_number': 'Reference No',
+                            'notes': 'Notes'
+                        })
+                        st.dataframe(display_payments, use_container_width=True)
+                        download_options(display_payments, filename_base=f"payments_student_{student_id}", title=f"Payments for {student_name}")
                 except Exception:
                     st.info("No payments or error loading payments")
-
                 st.subheader("Pay Outstanding Invoice")
                 outstanding_invoices = invoices[invoices['status'].isin(['Pending','Partially Paid'])]
                 if outstanding_invoices.empty:
@@ -955,16 +962,12 @@ elif page == "Students":
                                             INSERT INTO payments (invoice_id, receipt_number, payment_date, amount, payment_method, reference_number, received_by, notes, created_by)
                                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                                         """, (inv_id, pay_receipt, pay_date.isoformat(), pay_amount, pay_method, pay_ref, st.session_state.user['username'], pay_notes, st.session_state.user['username']))
-                                        try:
-                                            cat_row = conn.execute("SELECT id FROM expense_categories WHERE name = 'Tuition Fees'").fetchone()
-                                            cat_id = cat_row["id"] if cat_row else None
-                                            cur.execute("""
-                                                INSERT INTO incomes (date, receipt_number, amount, source, category_id, payment_method, payer, received_by, created_by)
-                                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                            """, (pay_date.isoformat(), pay_receipt, pay_amount, "Tuition Fees", cat_id, pay_method, selected.split(" - ")[0], st.session_state.user['username'], st.session_state.user['username']))
-                                        except Exception:
-                                            cur.execute("INSERT INTO incomes (date, amount, source, created_by) VALUES (?, ?, ?, ?)",
-                                                        (pay_date.isoformat(), pay_amount, f"Tuition fee payment for invoice {chosen_inv}", st.session_state.user['username']))
+                                        cat_row = conn.execute("SELECT id FROM expense_categories WHERE name = 'Tuition Fees'").fetchone()
+                                        cat_id = cat_row["id"] if cat_row else None
+                                        cur.execute("""
+                                            INSERT INTO incomes (date, receipt_number, amount, source, category_id, payment_method, payer, received_by, created_by, description)
+                                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        """, (pay_date.isoformat(), pay_receipt, pay_amount, "Tuition Fees", cat_id, pay_method, student_name, st.session_state.user['username'], st.session_state.user['username'], pay_notes))
                                         cur.execute("COMMIT")
                                         st.success("Payment recorded and invoice updated")
                                         log_action("pay_invoice", f"Payment {pay_amount} for invoice {chosen_inv}", st.session_state.user['username'])
@@ -976,73 +979,38 @@ elif page == "Students":
                                     pass
                                 st.error(f"Error recording payment: {e}")
         conn.close()
-
-    with tab_classes:
-        st.subheader("Manage Classes")
-        conn = get_db_connection()
-        with st.form("add_class_form"):
-            class_name = st.text_input("Class Name")
-            submit_class = st.form_submit_button("Add Class")
-        if submit_class:
-            if not class_name:
-                st.error("Enter class name")
-            else:
-                try:
-                    cur = conn.cursor()
-                    cur.execute("INSERT INTO classes (name) VALUES (?)", (class_name.strip(),))
-                    conn.commit()
-                    st.success("Class added successfully")
-                    log_action("add_class", f"Added class {class_name}", st.session_state.user['username'])
-                    safe_rerun()
-                except sqlite3.IntegrityError:
-                    st.error("Class name already exists")
-                except Exception as e:
-                    st.error(f"Error adding class: {e}")
-
-        st.subheader("Existing Classes")
-        classes_df = pd.read_sql("SELECT name FROM classes ORDER BY name", conn)
-        if classes_df.empty:
-            st.info("No classes added yet")
-        else:
-            st.dataframe(classes_df, use_container_width=True)
-        conn.close()
-
 # ---------------------------
 # Uniforms
 # ---------------------------
 elif page == "Uniforms":
     st.header("Uniforms – Inventory & Sales")
     conn = get_db_connection()
-
     def get_inventory_df():
         return pd.read_sql_query("""
-            SELECT uc.id as cat_id, uc.category, uc.gender, uc.is_shared, u.stock, u.unit_price
+            SELECT uc.id as cat_id, uc.category as Category, uc.gender as Gender, uc.is_shared as 'Is Shared', u.stock as Stock, u.unit_price as 'Unit Price'
             FROM uniforms u JOIN uniform_categories uc ON u.category_id = uc.id
             ORDER BY uc.gender, uc.category
         """, conn)
-
-    tab_view, tab_update, tab_sale, tab_manage = st.tabs(["View Inventory", "Update Stock/Price", "Record Sale", "Manage Categories"])
-
+    tab_view, tab_update, tab_sale, tab_manage, tab_edit_cat, tab_delete_cat = st.tabs(["View Inventory", "Update Stock/Price", "Record Sale", "Add Category", "Edit Category", "Delete Category"])
     with tab_view:
         inventory_df = get_inventory_df()
         if inventory_df.empty:
             st.info("No inventory records")
         else:
             display_df = inventory_df.copy()
-            display_df['unit_price'] = display_df['unit_price'].apply(lambda x: f"USh {x:,.0f}")
-            st.dataframe(display_df[['category','gender','is_shared','stock','unit_price']], use_container_width=True)
-            total_stock = inventory_df['stock'].sum()
-            total_value = (inventory_df['stock'] * inventory_df['unit_price']).sum()
+            display_df['Unit Price'] = display_df['Unit Price'].apply(lambda x: f"USh {x:,.0f}")
+            st.dataframe(display_df, use_container_width=True)
+            total_stock = inventory_df['Stock'].sum()
+            total_value = (inventory_df['Stock'] * inventory_df['Unit Price']).sum()
             col1, col2 = st.columns(2)
             col1.metric("Total Items in Stock", f"{int(total_stock):,}")
             col2.metric("Total Inventory Value", f"USh {total_value:,.0f}")
             download_options(inventory_df, filename_base="uniform_inventory", title="Uniform Inventory Report")
-
     with tab_update:
         st.subheader("Update Stock & Price")
         categories_df = pd.read_sql("SELECT uc.id, uc.category, u.stock, u.unit_price FROM uniform_categories uc JOIN uniforms u ON uc.id = u.category_id ORDER BY uc.category", conn)
         if categories_df.empty:
-            st.info("No uniform categories available. Add categories in Manage Categories tab.")
+            st.info("No uniform categories available.")
         else:
             selected_category = st.selectbox("Select Category", categories_df["category"].tolist(), key="update_category_select")
             cat_row = categories_df[categories_df["category"] == selected_category].iloc[0]
@@ -1073,7 +1041,6 @@ elif page == "Uniforms":
                     except Exception:
                         pass
                     st.error(f"Error updating inventory: {e}")
-
     with tab_sale:
         st.subheader("Record Uniform Sale")
         inv_df = pd.read_sql("""
@@ -1094,6 +1061,7 @@ elif page == "Uniforms":
             buyer = st.text_input("Buyer Name (optional)")
             payment_method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"])
             receipt_no = st.text_input("Receipt Number", value=generate_receipt_number())
+            notes = st.text_area("Notes")
             if st.button("Record Sale"):
                 if qty <= 0:
                     st.error("Enter a valid quantity")
@@ -1113,16 +1081,12 @@ elif page == "Uniforms":
                             new_stock = current - qty
                             cur.execute("UPDATE uniforms SET stock = ? WHERE category_id = ?", (new_stock, cat_id))
                             amount = qty * unit_price
-                            try:
-                                cat_row = conn.execute("SELECT id FROM expense_categories WHERE name = 'Uniform Sales'").fetchone()
-                                cat_id_income = cat_row["id"] if cat_row else None
-                                cur.execute("""
-                                    INSERT INTO incomes (date, receipt_number, amount, source, category_id, description, payment_method, payer, received_by, created_by)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                """, (date.today().isoformat(), receipt_no, amount, "Uniform Sales", cat_id_income, f"Sale of {qty} x {selected}", payment_method, buyer or "Walk-in", st.session_state.user['username'], st.session_state.user['username']))
-                            except Exception:
-                                cur.execute("INSERT INTO incomes (date, amount, source, created_by) VALUES (?, ?, ?, ?)",
-                                            (date.today().isoformat(), amount, f"Uniform sale {selected}", st.session_state.user['username']))
+                            cat_row = conn.execute("SELECT id FROM expense_categories WHERE name = 'Uniform Sales'").fetchone()
+                            cat_id_income = cat_row["id"] if cat_row else None
+                            cur.execute("""
+                                INSERT INTO incomes (date, receipt_number, amount, source, category_id, description, payment_method, payer, received_by, created_by)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (date.today().isoformat(), receipt_no, amount, "Uniform Sales", cat_id_income, f"Sale of {qty} x {selected} - {notes}", payment_method, buyer or "Walk-in", st.session_state.user['username'], st.session_state.user['username']))
                             cur.execute("COMMIT")
                             st.success(f"Sale recorded. New stock: {new_stock}")
                             log_action("uniform_sale", f"Sold {qty} of {selected} for USh {amount}", st.session_state.user['username'])
@@ -1133,9 +1097,8 @@ elif page == "Uniforms":
                         except Exception:
                             pass
                         st.error(f"Error recording sale: {e}")
-
     with tab_manage:
-        st.subheader("Manage Uniform Categories")
+        st.subheader("Add Uniform Category")
         with st.form("add_uniform_category"):
             cat_name = st.text_input("Category Name")
             gender = st.selectbox("Gender", ["boys","girls","shared"])
@@ -1169,135 +1132,373 @@ elif page == "Uniforms":
                         safe_rerun()
                     except Exception as e:
                         st.error(f"Error adding category: {e}")
+    with tab_edit_cat:
+        st.subheader("Edit Uniform Category")
+        categories_df = pd.read_sql("SELECT id, category, gender, is_shared FROM uniform_categories ORDER BY category", conn)
+        if categories_df.empty:
+            st.info("No categories to edit")
+        else:
+            selected_category = st.selectbox("Select Category to Edit", categories_df["category"].tolist())
+            cat_row = categories_df[categories_df["category"] == selected_category].iloc[0]
+            cat_id = int(cat_row['id'])
+            with st.form("edit_uniform_category"):
+                new_cat_name = st.text_input("Category Name", value=cat_row['category'])
+                new_gender = st.selectbox("Gender", ["boys","girls","shared"], index=["boys","girls","shared"].index(cat_row['gender']))
+                new_is_shared = 1 if new_gender == "shared" else 0
+                submit_edit = st.form_submit_button("Update Category")
+            if submit_edit:
+                if not new_cat_name:
+                    st.error("Enter category name")
+                else:
+                    try:
+                        existing = [r["normalized_category"] for r in conn.execute("SELECT normalized_category FROM uniform_categories WHERE id != ?", (cat_id,)).fetchall() if r["normalized_category"]]
+                        ncat = normalize_text(new_cat_name)
+                        dup, match = is_near_duplicate(ncat, existing)
+                        if dup:
+                            st.warning(f"A similar category exists: '{match}'")
+                        else:
+                            cur = conn.cursor()
+                            cur.execute("""
+                                UPDATE uniform_categories SET category = ?, normalized_category = ?, gender = ?, is_shared = ?
+                                WHERE id = ?
+                            """, (new_cat_name.strip(), ncat, new_gender, new_is_shared, cat_id))
+                            conn.commit()
+                            st.success("Category updated")
+                            log_action("edit_uniform_category", f"Updated category ID {cat_id} to {new_cat_name}", st.session_state.user['username'])
+                            safe_rerun()
+                    except Exception as e:
+                        st.error(f"Error updating category: {e}")
+    with tab_delete_cat:
+        require_role(["Admin"])
+        st.subheader("Delete Uniform Category")
+        st.warning("Deleting a category will also delete its inventory record. Proceed with caution.")
+        categories_df = pd.read_sql("SELECT id, category FROM uniform_categories ORDER BY category", conn)
+        if categories_df.empty:
+            st.info("No categories to delete")
+        else:
+            selected_category = st.selectbox("Select Category to Delete", categories_df["category"].tolist(), key="select_uniform_cat_to_delete")
+            cat_id = int(categories_df[categories_df["category"] == selected_category]["id"].iloc[0])
+            if st.checkbox("Confirm deletion", key=f"confirm_delete_uniform_cat_{cat_id}"):
+                if st.button("Delete Category", key=f"delete_uniform_cat_btn_{cat_id}"):
+                    try:
+                        cur = conn.cursor()
+                        cur.execute("DELETE FROM uniforms WHERE category_id = ?", (cat_id,))
+                        cur.execute("DELETE FROM uniform_categories WHERE id = ?", (cat_id,))
+                        conn.commit()
+                        st.success("Category deleted successfully")
+                        log_action("delete_uniform_category", f"Deleted category ID: {cat_id}", st.session_state.user['username'])
+                        safe_rerun()
+                    except Exception as e:
+                        st.error(f"Error deleting category: {e}")
     conn.close()
-
 # ---------------------------
 # Finances
 # ---------------------------
 elif page == "Finances":
     user_role = st.session_state.user.get('role')
     st.header("Finances")
-    tab_inc, tab_exp, tab_reports = st.tabs(["Record Income", "Record Expense", "View Transactions"])
-
-    term_sql, term_p = get_term_filter()
-
+    tab_inc, tab_exp, tab_reports, tab_edit_inc, tab_delete_inc, tab_edit_exp, tab_delete_exp, tab_transfer = st.tabs(["Record Income", "Record Expense", "View Transactions", "Edit Income", "Delete Income", "Edit Expense", "Delete Expense", "Record Transfer"])
     with tab_inc:
         st.subheader("Record Income")
         if user_role not in ("Admin", "Accountant"):
             st.info("You do not have permission to record incomes. View-only access.")
-        conn = get_db_connection()
-        try:
+        else:
+            conn = get_db_connection()
             categories = pd.read_sql("SELECT id, name FROM expense_categories WHERE category_type = 'Income' ORDER BY name", conn)
-        except Exception:
-            categories = pd.DataFrame(columns=["id","name"])
-        with st.form("record_income_form"):
-            date_in = st.date_input("Date", date.today())
-            receipt_no = st.text_input("Receipt Number", value=generate_receipt_number())
-            amount = st.number_input("Amount (USh)", min_value=0.0, step=100.0)
-            source = st.text_input("Source (e.g., Tuition Fees, Donations)")
-            category = st.selectbox("Category", ["-- Select --"] + categories["name"].tolist())
-            payment_method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"])
-            payer = st.text_input("Payer")
-            notes = st.text_area("Notes")
-            submit_income = st.form_submit_button("Record Income")
-        if submit_income:
-            if user_role not in ("Admin", "Accountant"):
-                st.error("Permission denied")
-            elif amount <= 0:
-                st.error("Enter a positive amount")
-            else:
-                try:
-                    cur = conn.cursor()
-                    cat_id = None
-                    if category != "-- Select --":
-                        cat_row = categories[categories["name"] == category]
-                        if not cat_row.empty:
-                            cat_id = int(cat_row["id"].iloc[0])
-                    cur.execute("""
-                        INSERT INTO incomes (date, receipt_number, amount, source, category_id, description, payment_method, payer, received_by, created_by)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (date_in.isoformat(), receipt_no, amount, source, cat_id, notes, payment_method, payer, st.session_state.user['username'], st.session_state.user['username']))
-                    conn.commit()
-                    st.success("Income recorded")
-                    log_action("record_income", f"Income {amount} from {source}", st.session_state.user['username'])
-                    safe_rerun()
-                except sqlite3.IntegrityError:
-                    st.error("Receipt number already exists")
-                except Exception as e:
-                    st.error(f"Error recording income: {e}")
-        conn.close()
-
+            with st.form("record_income_form"):
+                date_in = st.date_input("Date", date.today())
+                receipt_no = st.text_input("Receipt Number", value=generate_receipt_number())
+                amount = st.number_input("Amount (USh)", min_value=0.0, step=100.0)
+                source = st.text_input("Source (e.g., Tuition Fees, Donations)")
+                category = st.selectbox("Category", ["-- Select --"] + categories["name"].tolist())
+                payment_method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"])
+                payer = st.text_input("Payer")
+                description = st.text_area("Description")
+                submit_income = st.form_submit_button("Record Income")
+            if submit_income:
+                if amount <= 0:
+                    st.error("Enter a positive amount")
+                else:
+                    try:
+                        cur = conn.cursor()
+                        cat_id = None
+                        if category != "-- Select --":
+                            cat_row = categories[categories["name"] == category]
+                            if not cat_row.empty:
+                                cat_id = int(cat_row["id"].iloc[0])
+                        cur.execute("""
+                            INSERT INTO incomes (date, receipt_number, amount, source, category_id, description, payment_method, payer, received_by, created_by)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (date_in.isoformat(), receipt_no, amount, source, cat_id, description, payment_method, payer, st.session_state.user['username'], st.session_state.user['username']))
+                        conn.commit()
+                        st.success("Income recorded")
+                        log_action("record_income", f"Income {amount} from {source}", st.session_state.user['username'])
+                        safe_rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("Receipt number already exists")
+                    except Exception as e:
+                        st.error(f"Error recording income: {e}")
+            conn.close()
     with tab_exp:
         st.subheader("Record Expense")
         if user_role not in ("Admin", "Accountant"):
             st.info("You do not have permission to record expenses. View-only access.")
-        conn = get_db_connection()
-        try:
+        else:
+            conn = get_db_connection()
             categories = pd.read_sql("SELECT id, name FROM expense_categories WHERE category_type = 'Expense' ORDER BY name", conn)
-        except Exception:
-            categories = pd.DataFrame(columns=["id","name"])
-        with st.form("record_expense_form"):
-            date_e = st.date_input("Date", date.today())
-            voucher_no = st.text_input("Voucher Number", value=generate_voucher_number())
-            amount = st.number_input("Amount (USh)", min_value=0.0, step=100.0)
-            category = st.selectbox("Category", ["-- Select --"] + categories["name"].tolist())
-            payment_method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"])
-            payee = st.text_input("Payee")
-            description = st.text_area("Description")
-            approved_by = st.text_input("Approved By")
-            submit_expense = st.form_submit_button("Record Expense")
-        if submit_expense:
-            if user_role not in ("Admin", "Accountant"):
-                st.error("Permission denied")
-            elif amount <= 0:
-                st.error("Enter a positive amount")
-            else:
-                try:
-                    cur = conn.cursor()
-                    cat_id = None
-                    if category != "-- Select --":
-                        cat_row = categories[categories["name"] == category]
-                        if not cat_row.empty:
-                            cat_id = int(cat_row["id"].iloc[0])
-                    cur.execute("""
-                        INSERT INTO expenses (date, voucher_number, amount, category_id, description, payment_method, payee, approved_by, created_by)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (date_e.isoformat(), voucher_no, amount, cat_id, description, payment_method, payee, approved_by, st.session_state.user['username']))
-                    conn.commit()
-                    st.success("Expense recorded")
-                    log_action("record_expense", f"Expense {amount} voucher {voucher_no}", st.session_state.user['username'])
-                    safe_rerun()
-                except sqlite3.IntegrityError:
-                    st.error("Voucher number already exists")
-                except Exception as e:
-                    st.error(f"Error recording expense: {e}")
-        conn.close()
-
+            with st.form("record_expense_form"):
+                date_e = st.date_input("Date", date.today())
+                voucher_no = st.text_input("Voucher Number", value=generate_voucher_number())
+                amount = st.number_input("Amount (USh)", min_value=0.0, step=100.0)
+                category = st.selectbox("Category", ["-- Select --"] + categories["name"].tolist())
+                payment_method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"])
+                payee = st.text_input("Payee")
+                description = st.text_area("Description")
+                approved_by = st.text_input("Approved By")
+                submit_expense = st.form_submit_button("Record Expense")
+            if submit_expense:
+                if amount <= 0:
+                    st.error("Enter a positive amount")
+                else:
+                    try:
+                        cur = conn.cursor()
+                        cat_id = None
+                        if category != "-- Select --":
+                            cat_row = categories[categories["name"] == category]
+                            if not cat_row.empty:
+                                cat_id = int(cat_row["id"].iloc[0])
+                        cur.execute("""
+                            INSERT INTO expenses (date, voucher_number, amount, category_id, description, payment_method, payee, approved_by, created_by)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (date_e.isoformat(), voucher_no, amount, cat_id, description, payment_method, payee, approved_by, st.session_state.user['username']))
+                        conn.commit()
+                        st.success("Expense recorded")
+                        log_action("record_expense", f"Expense {amount} voucher {voucher_no}", st.session_state.user['username'])
+                        safe_rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("Voucher number already exists")
+                    except Exception as e:
+                        st.error(f"Error recording expense: {e}")
+            conn.close()
     with tab_reports:
         st.subheader("Transactions")
         conn = get_db_connection()
-        try:
-            df_inc = pd.read_sql(f"SELECT id, date, receipt_number, amount, source, payer, created_by FROM incomes WHERE 1=1{term_sql} ORDER BY date DESC LIMIT 500", conn, params=term_p)
-        except Exception:
-            df_inc = pd.DataFrame()
-        try:
-            df_exp = pd.read_sql("SELECT id, date, voucher_number, amount, description, payee, created_by FROM expenses ORDER BY date DESC LIMIT 500", conn)
-        except Exception:
-            df_exp = pd.DataFrame()
+        df_inc = pd.read_sql("""
+            SELECT i.date as Date, i.receipt_number as 'Receipt No', i.amount as Amount, i.source as Source, ec.name as Category, i.description as Description, i.payment_method as 'Payment Method', i.payer as Payer, i.received_by as 'Received By', i.created_by as 'Created By'
+            FROM incomes i LEFT JOIN expense_categories ec ON i.category_id = ec.id
+            ORDER BY i.date DESC LIMIT 500
+        """, conn)
+        df_exp = pd.read_sql("""
+            SELECT e.date as Date, e.voucher_number as 'Voucher No', e.amount as Amount, ec.name as Category, e.description as Description, e.payment_method as 'Payment Method', e.payee as Payee, e.approved_by as 'Approved By', e.created_by as 'Created By'
+            FROM expenses e LEFT JOIN expense_categories ec ON e.category_id = ec.id
+            ORDER BY e.date DESC LIMIT 500
+        """, conn)
         st.write("Recent Incomes")
         if df_inc.empty:
             st.info("No incomes recorded")
         else:
             st.dataframe(df_inc, use_container_width=True)
-            download_options(df_inc, "recent_incomes", "Recent Incomes")
+            download_options(df_inc, filename_base="recent_incomes", title="Recent Incomes")
         st.write("Recent Expenses")
         if df_exp.empty:
             st.info("No expenses recorded")
         else:
             st.dataframe(df_exp, use_container_width=True)
-            download_options(df_exp, "recent_expenses", "Recent Expenses")
+            download_options(df_exp, filename_base="recent_expenses", title="Recent Expenses")
         conn.close()
-
+    with tab_edit_inc:
+        st.subheader("Edit Income")
+        if user_role not in ("Admin", "Accountant"):
+            st.info("Permission denied")
+        else:
+            conn = get_db_connection()
+            incomes = pd.read_sql("SELECT id, receipt_number, date, amount, source, category_id, description, payment_method, payer FROM incomes ORDER BY date DESC", conn)
+            if incomes.empty:
+                st.info("No incomes to edit")
+            else:
+                selected_inc = st.selectbox("Select Income by Receipt Number", incomes['receipt_number'].tolist(), key="select_income_to_edit")
+                inc_row = incomes[incomes['receipt_number'] == selected_inc].iloc[0]
+                inc_id = int(inc_row['id'])
+                categories = pd.read_sql("SELECT id, name FROM expense_categories WHERE category_type = 'Income' ORDER BY name", conn)
+                with st.form("edit_income_form"):
+                    date_in = st.date_input("Date", value=date.fromisoformat(inc_row['date']))
+                    receipt_no = st.text_input("Receipt Number", value=inc_row['receipt_number'])
+                    amount = st.number_input("Amount (USh)", min_value=0.0, value=float(inc_row['amount']), step=100.0)
+                    source = st.text_input("Source", value=inc_row['source'])
+                    current_cat_id = inc_row['category_id']
+                    current_cat_name = categories[categories['id'] == current_cat_id]['name'].iloc[0] if current_cat_id else "-- Select --"
+                    category = st.selectbox("Category", ["-- Select --"] + categories["name"].tolist(), index= categories["name"].tolist().index(current_cat_name) + 1 if current_cat_name != "-- Select --" else 0)
+                    payment_method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"], index=["Cash","Bank Transfer","Mobile Money","Cheque"].index(inc_row['payment_method']))
+                    payer = st.text_input("Payer", value=inc_row['payer'])
+                    description = st.text_area("Description", value=inc_row['description'])
+                    submit_edit = st.form_submit_button("Update Income")
+                if submit_edit:
+                    if amount <= 0:
+                        st.error("Enter a positive amount")
+                    else:
+                        try:
+                            cur = conn.cursor()
+                            cat_id = None
+                            if category != "-- Select --":
+                                cat_row = categories[categories["name"] == category]
+                                if not cat_row.empty:
+                                    cat_id = int(cat_row["id"].iloc[0])
+                            cur.execute("""
+                                UPDATE incomes SET date = ?, receipt_number = ?, amount = ?, source = ?, category_id = ?, description = ?, payment_method = ?, payer = ?
+                                WHERE id = ?
+                            """, (date_in.isoformat(), receipt_no, amount, source, cat_id, description, payment_method, payer, inc_id))
+                            conn.commit()
+                            st.success("Income updated")
+                            log_action("edit_income", f"Updated income ID {inc_id} receipt {receipt_no}", st.session_state.user['username'])
+                            safe_rerun()
+                        except sqlite3.IntegrityError:
+                            st.error("Receipt number already exists")
+                        except Exception as e:
+                            st.error(f"Error updating income: {e}")
+            conn.close()
+    with tab_delete_inc:
+        require_role(["Admin"])
+        st.subheader("Delete Income")
+        st.warning("Deleting an income record is permanent. Proceed with caution.")
+        conn = get_db_connection()
+        incomes = pd.read_sql("SELECT id, receipt_number FROM incomes ORDER BY date DESC", conn)
+        if incomes.empty:
+            st.info("No incomes to delete")
+        else:
+            selected_inc = st.selectbox("Select Income to Delete by Receipt Number", incomes['receipt_number'].tolist(), key="select_income_to_delete")
+            inc_id = int(incomes[incomes['receipt_number'] == selected_inc]['id'].iloc[0])
+            if st.checkbox("Confirm deletion", key=f"confirm_delete_income_{inc_id}"):
+                if st.button("Delete Income", key=f"delete_income_btn_{inc_id}"):
+                    try:
+                        cur = conn.cursor()
+                        cur.execute("DELETE FROM incomes WHERE id = ?", (inc_id,))
+                        conn.commit()
+                        st.success("Income deleted successfully")
+                        log_action("delete_income", f"Deleted income ID: {inc_id}", st.session_state.user['username'])
+                        safe_rerun()
+                    except Exception as e:
+                        st.error(f"Error deleting income: {e}")
+        conn.close()
+    with tab_edit_exp:
+        st.subheader("Edit Expense")
+        if user_role not in ("Admin", "Accountant"):
+            st.info("Permission denied")
+        else:
+            conn = get_db_connection()
+            expenses = pd.read_sql("SELECT id, voucher_number, date, amount, category_id, description, payment_method, payee, approved_by FROM expenses ORDER BY date DESC", conn)
+            if expenses.empty:
+                st.info("No expenses to edit")
+            else:
+                selected_exp = st.selectbox("Select Expense by Voucher Number", expenses['voucher_number'].tolist(), key="select_expense_to_edit")
+                exp_row = expenses[expenses['voucher_number'] == selected_exp].iloc[0]
+                exp_id = int(exp_row['id'])
+                categories = pd.read_sql("SELECT id, name FROM expense_categories WHERE category_type = 'Expense' ORDER BY name", conn)
+                with st.form("edit_expense_form"):
+                    date_e = st.date_input("Date", value=date.fromisoformat(exp_row['date']))
+                    voucher_no = st.text_input("Voucher Number", value=exp_row['voucher_number'])
+                    amount = st.number_input("Amount (USh)", min_value=0.0, value=float(exp_row['amount']), step=100.0)
+                    current_cat_id = exp_row['category_id']
+                    current_cat_name = categories[categories['id'] == current_cat_id]['name'].iloc[0] if current_cat_id else "-- Select --"
+                    category = st.selectbox("Category", ["-- Select --"] + categories["name"].tolist(), index= categories["name"].tolist().index(current_cat_name) + 1 if current_cat_name != "-- Select --" else 0)
+                    payment_method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"], index=["Cash","Bank Transfer","Mobile Money","Cheque"].index(exp_row['payment_method']))
+                    payee = st.text_input("Payee", value=exp_row['payee'])
+                    description = st.text_area("Description", value=exp_row['description'])
+                    approved_by = st.text_input("Approved By", value=exp_row['approved_by'])
+                    submit_edit = st.form_submit_button("Update Expense")
+                if submit_edit:
+                    if amount <= 0:
+                        st.error("Enter a positive amount")
+                    else:
+                        try:
+                            cur = conn.cursor()
+                            cat_id = None
+                            if category != "-- Select --":
+                                cat_row = categories[categories["name"] == category]
+                                if not cat_row.empty:
+                                    cat_id = int(cat_row["id"].iloc[0])
+                            cur.execute("""
+                                UPDATE expenses SET date = ?, voucher_number = ?, amount = ?, category_id = ?, description = ?, payment_method = ?, payee = ?, approved_by = ?
+                                WHERE id = ?
+                            """, (date_e.isoformat(), voucher_no, amount, cat_id, description, payment_method, payee, approved_by, exp_id))
+                            conn.commit()
+                            st.success("Expense updated")
+                            log_action("edit_expense", f"Updated expense ID {exp_id} voucher {voucher_no}", st.session_state.user['username'])
+                            safe_rerun()
+                        except sqlite3.IntegrityError:
+                            st.error("Voucher number already exists")
+                        except Exception as e:
+                            st.error(f"Error updating expense: {e}")
+            conn.close()
+    with tab_delete_exp:
+        require_role(["Admin"])
+        st.subheader("Delete Expense")
+        st.warning("Deleting an expense record is permanent. Proceed with caution.")
+        conn = get_db_connection()
+        expenses = pd.read_sql("SELECT id, voucher_number FROM expenses ORDER BY date DESC", conn)
+        if expenses.empty:
+            st.info("No expenses to delete")
+        else:
+            selected_exp = st.selectbox("Select Expense to Delete by Voucher Number", expenses['voucher_number'].tolist(), key="select_expense_to_delete")
+            exp_id = int(expenses[expenses['voucher_number'] == selected_exp]['id'].iloc[0])
+            if st.checkbox("Confirm deletion", key=f"confirm_delete_expense_{exp_id}"):
+                if st.button("Delete Expense", key=f"delete_expense_btn_{exp_id}"):
+                    try:
+                        cur = conn.cursor()
+                        cur.execute("DELETE FROM expenses WHERE id = ?", (exp_id,))
+                        conn.commit()
+                        st.success("Expense deleted successfully")
+                        log_action("delete_expense", f"Deleted expense ID: {exp_id}", st.session_state.user['username'])
+                        safe_rerun()
+                    except Exception as e:
+                        st.error(f"Error deleting expense: {e}")
+        conn.close()
+    with tab_transfer:
+        st.subheader("Record Contra Entry (Transfer between Cash and Bank)")
+        if user_role not in ("Admin", "Accountant"):
+            st.info("Permission denied")
+        else:
+            conn = get_db_connection()
+            with st.form("record_transfer_form"):
+                transfer_date = st.date_input("Date", date.today())
+                amount = st.number_input("Amount (USh)", min_value=0.0, step=100.0)
+                from_account = st.selectbox("From Account", ["Cash", "Bank"])
+                to_account = st.selectbox("To Account", ["Bank", "Cash"])
+                description = st.text_area("Description")
+                submit_transfer = st.form_submit_button("Record Transfer")
+            if submit_transfer:
+                if amount <= 0:
+                    st.error("Enter a positive amount")
+                elif from_account == to_account:
+                    st.error("From and To accounts must be different")
+                else:
+                    try:
+                        cur = conn.cursor()
+                        # Get category IDs
+                        transfer_out_cat = conn.execute("SELECT id FROM expense_categories WHERE name = 'Transfer Out'").fetchone()
+                        transfer_out_id = transfer_out_cat["id"] if transfer_out_cat else None
+                        transfer_in_cat = conn.execute("SELECT id FROM expense_categories WHERE name = 'Transfer In'").fetchone()
+                        transfer_in_id = transfer_in_cat["id"] if transfer_in_cat else None
+                        # Expense from 'From'
+                        voucher_no = generate_voucher_number()
+                        pay_method_from = 'Cash' if from_account == "Cash" else 'Bank Transfer'
+                        cur.execute("""
+                            INSERT INTO expenses (date, voucher_number, amount, category_id, description, payment_method, payee, approved_by, created_by)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (transfer_date.isoformat(), voucher_no, amount, transfer_out_id, f"Transfer to {to_account}: {description}", pay_method_from, to_account, st.session_state.user['username'], st.session_state.user['username']))
+                        # Income to 'To'
+                        receipt_no = generate_receipt_number()
+                        pay_method_to = 'Bank Transfer' if to_account == "Bank" else 'Cash'
+                        cur.execute("""
+                            INSERT INTO incomes (date, receipt_number, amount, source, category_id, description, payment_method, payer, received_by, created_by)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (transfer_date.isoformat(), receipt_no, amount, f"Transfer from {from_account}", transfer_in_id, f"Transfer from {from_account}: {description}", pay_method_to, from_account, st.session_state.user['username'], st.session_state.user['username']))
+                        conn.commit()
+                        st.success("Transfer recorded successfully")
+                        log_action("record_transfer", f"Transfer {amount} from {from_account} to {to_account}", st.session_state.user['username'])
+                        safe_rerun()
+                    except Exception as e:
+                        st.error(f"Error recording transfer: {e}")
+            conn.close()
 # ---------------------------
 # Financial Report
 # ---------------------------
@@ -1313,10 +1514,9 @@ elif page == "Financial Report":
     else:
         if st.button("Generate Report"):
             try:
-                term_sql, term_p = get_term_filter()
                 if report_type == "Income vs Expense (date range)":
-                    df_inc = pd.read_sql(f"SELECT date, amount, source, payer FROM incomes WHERE date BETWEEN ? AND ?{term_sql} ORDER BY date", conn, params=[start_date.isoformat(), end_date.isoformat()] + term_p)
-                    df_exp = pd.read_sql("SELECT date, amount, description, payee FROM expenses WHERE date BETWEEN ? AND ? ORDER BY date", conn, params=(start_date.isoformat(), end_date.isoformat()))
+                    df_inc = pd.read_sql("SELECT date as Date, receipt_number as 'Receipt No', amount as Amount, source as Source, payment_method as 'Payment Method', payer as Payer, description as Description FROM incomes WHERE date BETWEEN ? AND ? ORDER BY date", conn, params=(start_date.isoformat(), end_date.isoformat()))
+                    df_exp = pd.read_sql("SELECT date as Date, voucher_number as 'Voucher No', amount as Amount, description as Description, payment_method as 'Payment Method', payee as Payee FROM expenses WHERE date BETWEEN ? AND ? ORDER BY date", conn, params=(start_date.isoformat(), end_date.isoformat()))
                     if df_inc.empty and df_exp.empty:
                         st.info("No transactions in this range")
                     else:
@@ -1324,60 +1524,64 @@ elif page == "Financial Report":
                         st.dataframe(df_inc, use_container_width=True)
                         st.subheader("Expenses")
                         st.dataframe(df_exp, use_container_width=True)
-                        total_inc = df_inc['amount'].sum() if not df_inc.empty else 0
-                        total_exp = df_exp['amount'].sum() if not df_exp.empty else 0
+                        total_inc = df_inc['Amount'].sum() if not df_inc.empty else 0
+                        total_exp = df_exp['Amount'].sum() if not df_exp.empty else 0
                         st.metric("Total Income", f"USh {total_inc:,.0f}")
                         st.metric("Total Expense", f"USh {total_exp:,.0f}")
-                        combined = pd.concat([df_inc.assign(type='Income'), df_exp.assign(type='Expense')], sort=False).fillna('')
-                        download_options(combined, f"financial_{start_date}_{end_date}", "Income vs Expense Report")
+                        combined = pd.concat([df_inc.assign(Type='Income'), df_exp.assign(Type='Expense')], sort=False).fillna('')
+                        download_options(combined, filename_base=f"financial_{start_date}_{end_date}", title="Income vs Expense Report")
                 elif report_type == "By Category":
                     cat = st.selectbox("Category Type", ["Income", "Expense"])
-                    sql_cat = f"SELECT ec.name, SUM(COALESCE(i.amount,0)) as total_income, SUM(COALESCE(e.amount,0)) as total_expense FROM expense_categories ec LEFT JOIN incomes i ON i.category_id = ec.id LEFT JOIN expenses e ON e.category_id = ec.id WHERE ec.category_type = ?{term_sql if cat == 'Income' else ''} GROUP BY ec.name"
-                    params_cat = (cat,) + (term_p if cat == 'Income' else ())
-                    df = pd.read_sql(sql_cat, conn, params=params_cat)
+                    df = pd.read_sql("""
+                        SELECT ec.name as Category, SUM(COALESCE(i.amount,0)) as 'Total Income', SUM(COALESCE(e.amount,0)) as 'Total Expense'
+                        FROM expense_categories ec
+                        LEFT JOIN incomes i ON i.category_id = ec.id
+                        LEFT JOIN expenses e ON e.category_id = ec.id
+                        WHERE ec.category_type = ?
+                        GROUP BY ec.name
+                    """, conn, params=(cat,))
                     if df.empty:
                         st.info("No data for selected category type")
                     else:
                         st.dataframe(df, use_container_width=True)
-                        download_options(df, f"by_category_{cat}", f"By Category - {cat}")
+                        download_options(df, filename_base=f"by_category_{cat}", title=f"By Category - {cat}")
                 elif report_type == "Outstanding Invoices":
-                    df = pd.read_sql(f"SELECT invoice_number, student_id, issue_date, due_date, total_amount, paid_amount, balance_amount, status FROM invoices WHERE status IN ('Pending','Partially Paid'){term_sql} ORDER BY due_date", conn, params=term_p)
+                    df = pd.read_sql("SELECT invoice_number as 'Invoice No', student_id as 'Student ID', issue_date as 'Issue Date', due_date as 'Due Date', total_amount as 'Total Amount', paid_amount as 'Paid Amount', balance_amount as 'Balance Amount', status as Status, notes as Notes FROM invoices WHERE status IN ('Pending','Partially Paid') ORDER BY due_date", conn)
                     if df.empty:
                         st.info("No outstanding invoices")
                     else:
                         st.dataframe(df, use_container_width=True)
-                        download_options(df, "outstanding_invoices", "Outstanding Invoices")
-                else:  # Student Payment Summary
+                        download_options(df, filename_base="outstanding_invoices", title="Outstanding Invoices")
+                else: # Student Payment Summary
                     students = pd.read_sql("SELECT id, name FROM students ORDER BY name", conn)
                     if students.empty:
                         st.info("No students available")
                     else:
                         sel = st.selectbox("Select Student", students.apply(lambda x: f"{x['name']} (ID: {x['id']})", axis=1))
                         sid = int(sel.split("(ID: ")[1].replace(")", ""))
-                        df_inv = pd.read_sql(f"SELECT invoice_number, academic_year, term, total_amount, paid_amount, balance_amount, status, issue_date FROM invoices WHERE student_id = ?{term_sql} ORDER BY issue_date DESC", conn, params=(sid,) + term_p)
-                        df_pay = pd.read_sql(f"SELECT payment_date, amount, payment_method, receipt_number, reference_number FROM payments p JOIN invoices i ON p.invoice_id = i.id WHERE i.student_id = ?{term_sql} ORDER BY payment_date DESC", conn, params=(sid,) + term_p)
+                        df_inv = pd.read_sql("SELECT invoice_number as 'Invoice No', academic_year as 'Academic Year', term as Term, total_amount as 'Total Amount', paid_amount as 'Paid Amount', balance_amount as 'Balance Amount', status as Status, issue_date as 'Issue Date', notes as Notes FROM invoices WHERE student_id = ? ORDER BY issue_date DESC", conn, params=(sid,))
+                        df_pay = pd.read_sql("SELECT payment_date as 'Payment Date', amount as Amount, payment_method as 'Payment Method', receipt_number as 'Receipt No', reference_number as 'Reference No', notes as Notes FROM payments p JOIN invoices i ON p.invoice_id = i.id WHERE i.student_id = ? ORDER BY payment_date DESC", conn, params=(sid,))
                         st.subheader("Invoices")
                         if df_inv.empty:
                             st.info("No invoices for this student")
                         else:
                             st.dataframe(df_inv, use_container_width=True)
-                            download_options(df_inv, f"student_{sid}_invoices", f"Invoices for Student {sid}")
+                            download_options(df_inv, filename_base=f"student_{sid}_invoices", title=f"Invoices for Student {sid}")
                         st.subheader("Payments")
                         if df_pay.empty:
                             st.info("No payments for this student")
                         else:
                             st.dataframe(df_pay, use_container_width=True)
-                            download_options(df_pay, f"student_{sid}_payments", f"Payments for Student {sid}")
+                            download_options(df_pay, filename_base=f"student_{sid}_payments", title=f"Payments for Student {sid}")
             except Exception as e:
                 st.error(f"Error generating report: {e}")
     conn.close()
-
 # ---------------------------
-# Cashbook
+# Cashbook - Updated to two-column
 # ---------------------------
 elif page == "Cashbook":
     require_role(["Admin", "Accountant", "Clerk"])
-    st.header("Cashbook (Running Balance)")
+    st.header("Two-Column Cashbook (Cash and Bank)")
     conn = get_db_connection()
     start_date = st.date_input("Start Date", date.today().replace(day=1))
     end_date = st.date_input("End Date", date.today())
@@ -1385,250 +1589,217 @@ elif page == "Cashbook":
         st.error("Start date must be before end date")
     else:
         try:
-            # Incomes are NOT filtered by term_id – only invoices are
-            df_inc = pd.read_sql(
-                "SELECT date as tx_date, amount, 'Income' as type, source as description "
-                "FROM incomes WHERE date BETWEEN ? AND ?",
-                conn, params=(start_date.isoformat(), end_date.isoformat())
-            )
-            df_exp = pd.read_sql(
-                "SELECT date as tx_date, amount, 'Expense' as type, description "
-                "FROM expenses WHERE date BETWEEN ? AND ?",
-                conn, params=(start_date.isoformat(), end_date.isoformat())
-            )
-            combined = pd.concat([df_inc, df_exp], sort=False).fillna('')
+            # Fetch incomes and expenses with payment_method
+            df_inc = pd.read_sql("""
+                SELECT date as tx_date, source || ' from ' || payer as description, amount, payment_method, 'Income' as type
+                FROM incomes WHERE date BETWEEN ? AND ?
+            """, conn, params=(start_date.isoformat(), end_date.isoformat()))
+            df_exp = pd.read_sql("""
+                SELECT date as tx_date, description || ' to ' || payee as description, amount, payment_method, 'Expense' as type
+                FROM expenses WHERE date BETWEEN ? AND ?
+            """, conn, params=(start_date.isoformat(), end_date.isoformat()))
+            combined = pd.concat([df_inc, df_exp], ignore_index=True)
             if combined.empty:
                 st.info("No transactions in this range")
             else:
                 combined['tx_date'] = pd.to_datetime(combined['tx_date'])
                 combined = combined.sort_values('tx_date').reset_index(drop=True)
-                combined['amount_signed'] = combined.apply(
-                    lambda r: r['amount'] if r['type'] == 'Income' else -abs(r['amount']), axis=1
-                )
-                combined['running_balance'] = combined['amount_signed'].cumsum()
-                display = combined[['tx_date','type','description','amount','running_balance']].copy()
-                display['tx_date'] = display['tx_date'].dt.date
+                # Classify to cash or bank
+                combined['cash_dr'] = 0.0
+                combined['cash_cr'] = 0.0
+                combined['bank_dr'] = 0.0
+                combined['bank_cr'] = 0.0
+                for idx, row in combined.iterrows():
+                    is_cash = row['payment_method'] in ['Cash', 'Mobile Money']
+                    if row['type'] == 'Income':
+                        if is_cash:
+                            combined.at[idx, 'cash_dr'] = row['amount']
+                        else:
+                            combined.at[idx, 'bank_dr'] = row['amount']
+                    else: # Expense
+                        if is_cash:
+                            combined.at[idx, 'cash_cr'] = row['amount']
+                        else:
+                            combined.at[idx, 'bank_cr'] = row['amount']
+                # Running balances
+                combined['cash_balance'] = (combined['cash_dr'] - combined['cash_cr']).cumsum()
+                combined['bank_balance'] = (combined['bank_dr'] - combined['bank_cr']).cumsum()
+                display = combined[['tx_date', 'description', 'cash_dr', 'bank_dr', 'cash_cr', 'bank_cr', 'cash_balance', 'bank_balance']].copy()
+                display = display.rename(columns={
+                    'tx_date': 'Date',
+                    'description': 'Description',
+                    'cash_dr': 'Cash In',
+                    'cash_cr': 'Cash Out',
+                    'bank_dr': 'Bank In',
+                    'bank_cr': 'Bank Out',
+                    'cash_balance': 'Cash Balance',
+                    'bank_balance': 'Bank Balance'
+                })
+                display['Date'] = display['Date'].dt.date
                 st.dataframe(display, use_container_width=True)
-                download_options(display, f"cashbook_{start_date}_{end_date}", "Cashbook")
+                download_options(display, filename_base=f"cashbook_{start_date}_{end_date}", title="Two-Column Cashbook")
         except Exception as e:
-            st.error(f"Error loading cashbook: {str(e)}")
+            st.error(f"Error loading cashbook: {e}")
     conn.close()
-
 # ---------------------------
-# Audit Log
+# Audit Log viewer
 # ---------------------------
 elif page == "Audit Log":
     require_role(["Admin", "Accountant"])
     st.header("Audit Log")
     conn = get_db_connection()
     try:
-        df_audit = pd.read_sql("SELECT performed_at, performed_by, action, details FROM audit_log ORDER BY performed_at DESC LIMIT 500", conn)
+        df_audit = pd.read_sql("SELECT performed_at as 'Performed At', performed_by as 'Performed By', action as Action, details as Details FROM audit_log ORDER BY performed_at DESC LIMIT 500", conn)
         if df_audit.empty:
             st.info("No audit entries")
         else:
             st.dataframe(df_audit, use_container_width=True)
-            download_options(df_audit, "audit_log", "Audit Log")
+            download_options(df_audit, filename_base="audit_log", title="Audit Log")
     except Exception as e:
         st.error(f"Error loading audit log: {e}")
     conn.close()
-
 # ---------------------------
 # Fee Management
 # ---------------------------
 elif page == "Fee Management":
+    require_role(["Admin", "Accountant"])
     st.header("Fee Management")
-    tab_terms, tab_structure, tab_invoices, tab_payments = st.tabs(
-        ["Configure Academic Terms", "Configure Fee Structures", "Generate Invoices", "Record Payments"]
-    )
-    # --- Academic Terms ---
-    with tab_terms:
-        st.subheader("Academic Terms")
-        conn = get_db_connection()
-        with st.form("add_term_form"):
-            year = st.text_input("Academic Year (e.g. 2026)")
-            term = st.selectbox("Term", ["Term 1", "Term 2", "Term 3"])
-            start_date = st.date_input("Start Date")
-            end_date = st.date_input("End Date")
-            submitted = st.form_submit_button("Add Term")
-            if submitted:
-                try:
-                    conn.execute("""
-                        INSERT INTO academic_terms (academic_year, term, start_date, end_date)
-                        VALUES (?, ?, ?, ?)
-                    """, (year, term, start_date.isoformat(), end_date.isoformat()))
-                    conn.commit()
-                    st.success("Term added successfully")
-                    log_action("add_term", f"{term} {year}", st.session_state.user['username'])
-                except Exception as e:
-                    st.error(f"Error adding term: {e}")
-        df_terms = pd.read_sql("SELECT * FROM academic_terms ORDER BY academic_year DESC, term DESC", conn)
-        st.dataframe(df_terms, use_container_width=True)
-        download_options(df_terms, "academic_terms", "Academic Terms")
-        conn.close()
-    # --- Fee Structures ---
-    with tab_structure:
-        st.subheader("Fee Structures per Class")
+    tab_define, tab_generate, tab_edit_inv, tab_delete_inv = st.tabs(["Define Fee Structure", "Generate Invoice", "Edit Invoice", "Delete Invoice"])
+    with tab_define:
+        st.subheader("Define Fee Structure")
         conn = get_db_connection()
         classes = pd.read_sql("SELECT id, name FROM classes ORDER BY name", conn)
-        terms = pd.read_sql("SELECT id, academic_year, term FROM academic_terms ORDER BY academic_year DESC", conn)
-        if classes.empty or terms.empty:
-            st.warning("Please configure classes and academic terms first.")
+        if classes.empty:
+            st.info("No classes defined. Add classes in Students tab.")
         else:
             with st.form("fee_structure_form"):
-                term_opt = st.selectbox("Select Term", terms.apply(lambda r: f"{r['term']} {r['academic_year']} (ID:{r['id']})", axis=1))
-                class_opt = st.selectbox("Select Class", classes.apply(lambda r: f"{r['name']} (ID:{r['id']})", axis=1))
-                tuition = st.number_input("Tuition Fee", min_value=0.0, value=0.0)
-                uniform = st.number_input("Uniform Fee", min_value=0.0, value=0.0)
-                activity = st.number_input("Activity Fee", min_value=0.0, value=0.0)
-                exam = st.number_input("Exam Fee", min_value=0.0, value=0.0)
-                library = st.number_input("Library Fee", min_value=0.0, value=0.0)
-                other = st.number_input("Other Fee", min_value=0.0, value=0.0)
-                submitted = st.form_submit_button("Save Fee Structure")
-                if submitted:
-                    try:
-                        term_id = int(term_opt.split("ID:")[1].replace(")", ""))
-                        class_id = int(class_opt.split("ID:")[1].replace(")", ""))
-                        total = tuition + uniform + activity + exam + library + other
-                        conn.execute("""
-                            INSERT OR REPLACE INTO fee_structure
-                            (term_id, class_id, tuition_fee, uniform_fee, activity_fee, exam_fee, library_fee, other_fee, total_fee)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (term_id, class_id, tuition, uniform, activity, exam, library, other, total))
+                cls_name = st.selectbox("Class", classes["name"].tolist())
+                cls_id = int(classes[classes["name"] == cls_name]["id"].iloc[0])
+                term = st.selectbox("Term", ["Term 1","Term 2","Term 3"])
+                academic_year = st.text_input("Academic Year (e.g., 2025/2026)", value=str(date.today().year) + "/" + str(date.today().year+1))
+                tuition_fee = st.number_input("Tuition Fee", min_value=0.0, value=0.0, step=100.0)
+                uniform_fee = st.number_input("Uniform Fee", min_value=0.0, value=0.0, step=100.0)
+                activity_fee = st.number_input("Activity Fee", min_value=0.0, value=0.0, step=100.0)
+                exam_fee = st.number_input("Exam Fee", min_value=0.0, value=0.0, step=100.0)
+                library_fee = st.number_input("Library Fee", min_value=0.0, value=0.0, step=100.0)
+                other_fee = st.number_input("Other Fee", min_value=0.0, value=0.0, step=100.0)
+                create_fee = st.form_submit_button("Create/Update Fee Structure")
+            if create_fee:
+                try:
+                    total_fee = sum([tuition_fee, uniform_fee, activity_fee, exam_fee, library_fee, other_fee])
+                    cur = conn.cursor()
+                    existing = cur.execute("SELECT id FROM fee_structure WHERE class_id = ? AND term = ? AND academic_year = ?", (cls_id, term, academic_year)).fetchone()
+                    if existing:
+                        cur.execute("""
+                            UPDATE fee_structure SET tuition_fee=?, uniform_fee=?, activity_fee=?, exam_fee=?, library_fee=?, other_fee=?, total_fee=?, created_at=CURRENT_TIMESTAMP
+                            WHERE id = ?
+                        """, (tuition_fee, uniform_fee, activity_fee, exam_fee, library_fee, other_fee, total_fee, existing[0]))
                         conn.commit()
-                        st.success("Fee structure saved successfully")
-                        log_action("fee_structure", f"Class {class_id}, Term {term_id}", st.session_state.user['username'])
-                    except Exception as e:
-                        st.error(f"Error saving fee structure: {e}")
-        df_struct = pd.read_sql("""
-            SELECT fs.id, at.academic_year, at.term, c.name as class_name,
-                   fs.tuition_fee, fs.uniform_fee, fs.activity_fee, fs.exam_fee,
-                   fs.library_fee, fs.other_fee, fs.total_fee
-            FROM fee_structure fs
-            JOIN academic_terms at ON fs.term_id = at.id
-            JOIN classes c ON fs.class_id = c.id
-            ORDER BY at.academic_year DESC, c.name
-        """, conn)
-        st.dataframe(df_struct, use_container_width=True)
-        download_options(df_struct, "fee_structures", "Fee Structures")
+                        st.success("Fee structure updated")
+                        log_action("update_fee_structure", f"class {cls_name} term {term} year {academic_year} total {total_fee}", st.session_state.user['username'])
+                        safe_rerun()
+                    else:
+                        cur.execute("""
+                            INSERT INTO fee_structure (class_id, term, academic_year, tuition_fee, uniform_fee, activity_fee, exam_fee, library_fee, other_fee, total_fee)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (cls_id, term, academic_year, tuition_fee, uniform_fee, activity_fee, exam_fee, library_fee, other_fee, total_fee))
+                        conn.commit()
+                        st.success("Fee structure created")
+                        log_action("create_fee_structure", f"class {cls_name} term {term} year {academic_year} total {total_fee}", st.session_state.user['username'])
+                        safe_rerun()
+                except Exception as e:
+                    st.error(f"Error saving fee structure: {e}")
         conn.close()
-    # --- Generate Invoices ---
-    with tab_invoices:
-        st.subheader("Generate Invoices for Students")
+    with tab_generate:
+        st.subheader("Generate Invoice")
         conn = get_db_connection()
-        classes = pd.read_sql("SELECT id, name FROM classes ORDER BY name", conn)
-        terms = pd.read_sql("SELECT id, academic_year, term FROM academic_terms ORDER BY academic_year DESC", conn)
-        if classes.empty or terms.empty:
-            st.warning("Please configure classes and academic terms first.")
+        students = pd.read_sql("SELECT s.id, s.name, c.name as class_name FROM students s JOIN classes c ON s.class_id = c.id ORDER BY s.name", conn)
+        if students.empty:
+            st.info("No students to invoice")
         else:
-            with st.form("generate_invoices_form"):
-                term_opt = st.selectbox("Select Term", terms.apply(lambda r: f"{r['term']} {r['academic_year']} (ID:{r['id']})", axis=1))
-                class_opt = st.selectbox("Select Class", classes.apply(lambda r: f"{r['name']} (ID:{r['id']})", axis=1))
-                submitted = st.form_submit_button("Generate Invoices")
-                if submitted:
+            selected = st.selectbox("Select Student", students.apply(lambda x: f"{x['name']} - {x['class_name']} (ID: {x['id']})", axis=1), key="select_student_for_invoice")
+            student_id = int(selected.split("(ID: ")[1].replace(")", ""))
+            fee_options = pd.read_sql("SELECT fs.id, c.name as class_name, fs.term, fs.academic_year, fs.total_fee FROM fee_structure fs JOIN classes c ON fs.class_id = c.id WHERE fs.class_id = (SELECT class_id FROM students WHERE id = ?) ORDER BY fs.academic_year DESC", conn, params=(student_id,))
+            if fee_options.empty:
+                st.info("No fee structure for this student's class. Define fee structure first.")
+            else:
+                chosen = st.selectbox("Choose Fee Structure", fee_options.apply(lambda x: f"{x['academic_year']} - {x['term']} (USh {x['total_fee']:,.0f})", axis=1), key="select_fee_structure")
+                idx = fee_options.index[fee_options.apply(lambda x: f"{x['academic_year']} - {x['term']} (USh {x['total_fee']:,.0f})", axis=1) == chosen][0]
+                fee_row = fee_options.loc[idx]
+                issue_date = st.date_input("Issue Date", date.today())
+                due_date = st.date_input("Due Date", date.today())
+                notes = st.text_area("Notes")
+                if st.button("Create Invoice"):
                     try:
-                        term_id = int(term_opt.split("ID:")[1].replace(")", ""))
-                        class_id = int(class_opt.split("ID:")[1].replace(")", ""))
-                        fee_row = conn.execute("SELECT * FROM fee_structure WHERE term_id=? AND class_id=?", (term_id, class_id)).fetchone()
-                        if not fee_row:
-                            st.error("No fee structure found for this class and term.")
+                        cur = conn.cursor()
+                        existing_invoice = cur.execute("SELECT id FROM invoices WHERE student_id = ? AND term = ? AND academic_year = ?", (student_id, fee_row['term'], fee_row['academic_year'])).fetchone()
+                        if existing_invoice:
+                            st.error("An invoice for this student, term, and academic year already exists. Cannot create duplicate.")
                         else:
-                            students = conn.execute("SELECT id, name FROM students WHERE class_id=?", (class_id,)).fetchall()
-                            for s in students:
-                                inv_exists = conn.execute("SELECT id FROM invoices WHERE student_id=? AND term_id=?", (s["id"], term_id)).fetchone()
-                                if inv_exists:
-                                    continue
-                                total = fee_row["total_fee"]
-                                conn.execute("""
-                                    INSERT INTO invoices (invoice_number, student_id, term_id, issue_date, due_date, total_amount, paid_amount, balance_amount, status, created_by)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                """, (generate_invoice_number(), s["id"], term_id, date.today().isoformat(),
-                                      date.today().isoformat(), total, 0, total, "Pending", st.session_state.user['username']))
+                            inv_no = generate_invoice_number()
+                            total_amount = float(fee_row['total_fee'])
+                            cur.execute("""
+                                INSERT INTO invoices (invoice_number, student_id, issue_date, due_date, academic_year, term, total_amount, paid_amount, balance_amount, status, notes, created_by)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'Pending', ?, ?)
+                            """, (inv_no, student_id, issue_date.isoformat(), due_date.isoformat(), fee_row['academic_year'], fee_row['term'], total_amount, total_amount, notes, st.session_state.user['username']))
                             conn.commit()
-                            st.success("Invoices generated successfully")
-                            log_action("generate_invoices", f"Class {class_id}, Term {term_id}", st.session_state.user['username'])
+                            st.success(f"Invoice {inv_no} created for USh {total_amount:,.0f}")
+                            log_action("create_invoice", f"Invoice {inv_no} for student {student_id} amount {total_amount}", st.session_state.user['username'])
+                            safe_rerun()
                     except Exception as e:
-                        st.error(f"Error generating invoices: {e}")
-        df_inv = pd.read_sql("""
-            SELECT i.invoice_number, s.name as student_name, c.name as class_name,
-                   at.academic_year, at.term, i.total_amount, i.paid_amount, i.balance_amount, i.status
-            FROM invoices i
-            JOIN students s ON i.student_id = s.id
-            JOIN classes c ON s.class_id = c.id
-            JOIN academic_terms at ON i.term_id = at.id
-            ORDER BY at.academic_year DESC, c.name, s.name
-        """, conn)
-        st.dataframe(df_inv, use_container_width=True)
-        download_options(df_inv, "invoices", "Invoices Report")
+                        st.error(f"Error creating invoice: {e}")
         conn.close()
-    # --- Record Payments ---
-    with tab_payments:
-        st.subheader("Record Student Payments")
+    with tab_edit_inv:
+        st.subheader("Edit Invoice")
         conn = get_db_connection()
-        invoices = pd.read_sql("""
-            SELECT i.id, i.invoice_number, s.name as student_name, c.name as class_name, i.balance_amount, i.status
-            FROM invoices i
-            JOIN students s ON i.student_id = s.id
-            JOIN classes c ON s.class_id = c.id
-            WHERE i.status IN ('Pending','Partially Paid')
-            ORDER BY c.name, s.name
-        """, conn)
+        invoices = pd.read_sql("SELECT i.id, i.invoice_number, s.name as student_name FROM invoices i JOIN students s ON i.student_id = s.id ORDER BY i.issue_date DESC", conn)
         if invoices.empty:
-            st.info("No pending invoices.")
+            st.info("No invoices to edit")
         else:
-            with st.form("record_payment_form"):
-                inv_opt = st.selectbox("Select Invoice", invoices.apply(lambda r: f"{r['invoice_number']} - {r['student_name']} ({r['class_name']}) Balance: {r['balance_amount']}", axis=1))
-                amount = st.number_input("Payment Amount", min_value=0.0, value=0.0)
-                method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"])
-                submitted = st.form_submit_button("Record Payment")
-                if submitted:
+            selected_inv = st.selectbox("Select Invoice by Number", invoices['invoice_number'].tolist(), key="select_invoice_to_edit")
+            inv_row = conn.execute("SELECT * FROM invoices WHERE invoice_number = ?", (selected_inv,)).fetchone()
+            with st.form("edit_invoice_form"):
+                issue_date = st.date_input("Issue Date", value=date.fromisoformat(inv_row['issue_date']))
+                due_date = st.date_input("Due Date", value=date.fromisoformat(inv_row['due_date']))
+                total_amount = st.number_input("Total Amount", min_value=0.0, value=float(inv_row['total_amount']))
+                notes = st.text_area("Notes", value=inv_row['notes'])
+                submit_edit = st.form_submit_button("Update Invoice")
+            if submit_edit:
+                try:
+                    new_balance = total_amount - float(inv_row['paid_amount'])
+                    new_status = 'Fully Paid' if new_balance <= 0 else 'Partially Paid' if inv_row['paid_amount'] > 0 else 'Pending'
+                    cur = conn.cursor()
+                    cur.execute("""
+                        UPDATE invoices SET issue_date = ?, due_date = ?, total_amount = ?, balance_amount = ?, status = ?, notes = ?
+                        WHERE id = ?
+                    """, (issue_date.isoformat(), due_date.isoformat(), total_amount, new_balance, new_status, notes, inv_row['id']))
+                    conn.commit()
+                    st.success("Invoice updated")
+                    log_action("edit_invoice", f"Updated invoice {selected_inv}", st.session_state.user['username'])
+                    safe_rerun()
+                except Exception as e:
+                    st.error(f"Error updating invoice: {e}")
+        conn.close()
+    with tab_delete_inv:
+        require_role(["Admin"])
+        st.subheader("Delete Invoice")
+        st.warning("Deleting an invoice will not delete related payments. Proceed with caution.")
+        conn = get_db_connection()
+        invoices = pd.read_sql("SELECT id, invoice_number FROM invoices ORDER BY issue_date DESC", conn)
+        if invoices.empty:
+            st.info("No invoices to delete")
+        else:
+            selected_inv = st.selectbox("Select Invoice to Delete by Number", invoices['invoice_number'].tolist(), key="select_invoice_to_delete")
+            inv_id = int(invoices[invoices['invoice_number'] == selected_inv]['id'].iloc[0])
+            if st.checkbox("Confirm deletion", key=f"confirm_delete_invoice_{inv_id}"):
+                if st.button("Delete Invoice", key=f"delete_invoice_btn_{inv_id}"):
                     try:
-                        # safer: parse invoice id from dataframe
-                        selected_row = invoices[invoices.apply(lambda r: f"{r['invoice_number']} - {r['student_name']} ({r['class_name']}) Balance: {r['balance_amount']}", axis=1) == inv_opt].iloc[0]
-                        inv_id = selected_row["id"]
-                        balance = selected_row["balance_amount"]
-                        if amount <= 0 or amount > balance:
-                            st.error("Invalid payment amount")
-                        else:
-                            # Update invoice
-                            conn.execute("""
-                                UPDATE invoices
-                                SET paid_amount = paid_amount + ?, balance_amount = balance_amount - ?,
-                                    status = CASE
-                                        WHEN balance_amount - ? <= 0 THEN 'Fully Paid'
-                                        ELSE 'Partially Paid'
-                                    END
-                                WHERE id = ?
-                            """, (amount, amount, amount, inv_id))
-                            # Insert payment record
-                            conn.execute("""
-                                INSERT INTO payments (invoice_id, receipt_number, payment_date, amount, payment_method, received_by, created_by)
-                                VALUES (?, ?, ?, ?, ?, ?, ?)
-                            """, (inv_id, generate_receipt_number(), date.today().isoformat(), amount, method,
-                                  st.session_state.user['username'], st.session_state.user['username']))
-                            # Also insert into incomes for Cashbook/Dashboard
-                            conn.execute("""
-                                INSERT INTO incomes (date, receipt_number, amount, source, description, payment_method, payer, received_by, created_by)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """, (date.today().isoformat(), generate_receipt_number(), amount, "Student Fees",
-                                  f"Payment against invoice {selected_row['invoice_number']}", method,
-                                  selected_row["student_name"], st.session_state.user['username'], st.session_state.user['username']))
-                            conn.commit()
-                            st.success("Payment recorded successfully")
-                            log_action("record_payment", f"Invoice {selected_row['invoice_number']} payment {amount}", st.session_state.user['username'])
+                        cur = conn.cursor()
+                        cur.execute("DELETE FROM invoices WHERE id = ?", (inv_id,))
+                        conn.commit()
+                        st.success("Invoice deleted successfully")
+                        log_action("delete_invoice", f"Deleted invoice ID: {inv_id}", st.session_state.user['username'])
+                        safe_rerun()
                     except Exception as e:
-                        st.error(f"Error recording payment: {e}")
-        df_pay = pd.read_sql("""
-            SELECT p.receipt_number, p.payment_date, p.amount, p.payment_method,
-                   s.name as student_name, c.name as class_name, i.invoice_number
-            FROM payments p
-            JOIN invoices i ON p.invoice_id = i.id
-            JOIN students s ON i.student_id = s.id
-            JOIN classes c ON s.class_id = c.id
-            ORDER BY p.payment_date DESC
-        """, conn)
-        if df_pay.empty:
-            st.info("No payments recorded yet.")
-        else:
-            st.dataframe(df_pay, use_container_width=True)
-            download_options(df_pay, "payments", "Payments Report")
+                        st.error(f"Error deleting invoice: {e}")
         conn.close()
