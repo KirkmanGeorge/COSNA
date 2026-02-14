@@ -2145,36 +2145,37 @@ elif page == "Terms Management":
             term_data = conn.execute("SELECT * FROM terms WHERE id = ?", (term_id_edit,)).fetch
         if term_data is None:
                         st.error("Selected term not found in database.")
-                    else:
-                        with st.form("edit_term_form"):
-                            term_options = ["Term 1", "Term 2", "Term 3"]
-                            
-                            current_name = (term_data['name'] or "").strip()
-                            try:
-                                default_index = term_options.index(current_name)
-                            except ValueError:
-                                default_index = 0
-                                st.warning(
-                                    f"Stored term name '{current_name}' is not one of the standard options "
-                                    f"({', '.join(term_options)}). Defaulting to 'Term 1' for editing."
-                                )
-                            
-                            edit_name = st.selectbox("Term Name", term_options, index=default_index)
-                            edit_year = st.text_input("Academic Year", value=term_data['academic_year'] or "")
-                            edit_start = st.date_input(
-                                "Start Date", 
-                                value=date.fromisoformat(term_data['start_date']) if term_data['start_date'] else date.today()
-                            )
-                            edit_end = st.date_input(
-                                "End Date", 
-                                value=date.fromisoformat(term_data['end_date']) if term_data['end_date'] else date.today()
-                            )
-                            edit_current = st.checkbox("Mark as Current Term", value=bool(term_data['is_current']))
-                            submit_edit_term = st.form_submit_button("Save Changes")
+        else:
+            with st.form("edit_term_form"):
+            term_options = ["Term 1", "Term 2", "Term 3"]
+            current_name = (term_data['name'] or "").strip()
+            try:
+                default_index = term_options.index(current_name)
+                except ValueError:
+                    default_index = 0
+                    st.warning(
+                    f"Stored term name '{current_name}' is not one of the standard options "
+                    f"({', '.join(term_options)}). Defaulting to 'Term 1' for editing."
+                        )
+                    
+                    edit_name = st.selectbox("Term Name", term_options, index=default_index)
+                    edit_year = st.text_input("Academic Year", value=term_data['academic_year'] or "")
+                    edit_start = st.date_input(
+                        
+                        "Start Date", 
+                        value=date.fromisoformat(term_data['start_date']) if term_data['start_date'] else date.today()
+                        )
+                    edit_end = st.date_input(
+                        "End Date", 
+                        value=date.fromisoformat(term_data['end_date']) if term_data['end_date'] else date.today()
+                        )
+                        edit_current = st.checkbox("Mark as Current Term", value=bool(term_data['is_current']))
+                        submit_edit_term = st.form_submit_button("Save Changes")
+                    
 
-                        if submit_edit_term:
-                            if edit_start >= edit_end:
-                                st.error("End date must be after start date")
+                    if submit_edit_term:
+                        if edit_start >= edit_end:
+                            st.error("End date must be after start date")
                             else:
                                 try:
                                     cur = conn.cursor()
