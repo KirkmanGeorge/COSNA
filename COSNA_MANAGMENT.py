@@ -1803,3 +1803,9 @@ elif page == "Fee Management":
                     except Exception as e:
                         st.error(f"Error deleting invoice: {e}")
         conn.close()
+# ────────────────────────────────────────────────
+#   Footer / Final Closing
+# ────────────────────────────────────────────────
+st.markdown("---")
+st.caption(f"© COSNA School Management System • {datetime.now().year} • Final Fixed Version")
+st.caption("Developed for Cosna Daycare, Nursery, Day and Boarding Primary School Kiyinda-Mityana")
