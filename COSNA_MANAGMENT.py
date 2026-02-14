@@ -29,7 +29,6 @@ import difflib
 import hashlib
 import os
 import traceback
-
 # ---------------------------
 # Configuration
 # ---------------------------
@@ -45,7 +44,6 @@ PAGE_LAYOUT = "wide"
 st.set_page_config(page_title=APP_TITLE, layout=PAGE_LAYOUT, initial_sidebar_state="expanded")
 st.title(APP_TITLE)
 st.markdown("Students • Uniforms • Finances • Reports")
-
 # ---------------------------
 # Utilities
 # ---------------------------
@@ -53,46 +51,38 @@ def get_db_connection():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
-
 def normalize_text(s: str):
     if s is None:
         return ""
     return " ".join(s.strip().lower().split())
-
 def similar(a: str, b: str):
     if not a or not b:
         return 0.0
     return difflib.SequenceMatcher(None, normalize_text(a), normalize_text(b)).ratio()
-
 def is_near_duplicate(candidate: str, existing_list, threshold=SIMILARITY_THRESHOLD):
     candidate_n = normalize_text(candidate)
     for ex in existing_list:
         if similar(candidate_n, ex) >= threshold:
             return True, ex
     return False, None
-
 def hash_password(password: str, salt: str = None):
     if salt is None:
         salt = os.urandom(16).hex()
     hashed = hashlib.sha256((salt + password).encode('utf-8')).hexdigest()
     return f"{salt}${hashed}"
-
 def verify_password(stored: str, provided: str):
     try:
         salt, _ = stored.split('$', 1)
     except Exception:
         return False
     return hash_password(provided, salt) == stored
-
 def generate_code(prefix="RCPT"):
     day = datetime.now().strftime("%d")
     random_chars = ''.join(random.choices(string.ascii_uppercase + string.digits, k=2))
     return f"{prefix}-{day}{random_chars}"
-
 def generate_receipt_number(): return generate_code("RCPT")
 def generate_invoice_number(): return generate_code("INV")
 def generate_voucher_number(): return generate_code("VCH")
-
 # Safe rerun helper
 def safe_rerun():
     try:
@@ -103,7 +93,6 @@ def safe_rerun():
             st.stop()
     except Exception:
         pass
-
 # ---------------------------
 # DB migration helpers
 # ---------------------------
@@ -112,7 +101,6 @@ def table_has_column(conn, table_name, column_name):
     cur.execute(f"PRAGMA table_info({table_name})")
     cols = [r[1] for r in cur.fetchall()]
     return column_name in cols
-
 def safe_alter_add_column(conn, table, column_def):
     col_name = column_def.split()[0]
     try:
@@ -123,7 +111,6 @@ def safe_alter_add_column(conn, table, column_def):
     except Exception:
         return False
     return False
-
 # ---------------------------
 # Initialize DB and seed
 # ---------------------------
@@ -387,7 +374,6 @@ def initialize_database():
         pass
     conn.close()
 initialize_database()
-
 # ---------------------------
 # Audit logging
 # ---------------------------
@@ -400,7 +386,6 @@ def log_action(action, details="", performed_by="system"):
         conn.close()
     except Exception:
         pass
-
 # ---------------------------
 # Authentication
 # ---------------------------
@@ -411,16 +396,13 @@ def get_user(username):
     row = cur.fetchone()
     conn.close()
     return row
-
 if 'user' not in st.session_state:
     st.session_state.user = None
-
 # ---------------------------
 # Logo handling
 # ---------------------------
 def logo_exists():
     return os.path.exists(LOGO_FILENAME)
-
 def save_uploaded_logo(uploaded_file):
     try:
         with open(LOGO_FILENAME, "wb") as f:
@@ -428,7 +410,6 @@ def save_uploaded_logo(uploaded_file):
         return True
     except Exception:
         return False
-
 # ---------------------------
 # Export helpers (Excel & PDF landscape)
 # ---------------------------
@@ -438,8 +419,7 @@ def df_to_excel_bytes(df: pd.DataFrame, sheet_name="Sheet1"):
         df.to_excel(writer, sheet_name=sheet_name, index=False)
     buf.seek(0)
     return buf
-
-def draw_wrapped_text(c, text, x, y, width, font='Helvetica', size=8):
+def draw_wrapped_text(c, text, x, y, width, font='Times-Roman', size=10):
     c.setFont(font, size)
     lines = []
     line = []
@@ -454,7 +434,6 @@ def draw_wrapped_text(c, text, x, y, width, font='Helvetica', size=8):
         c.drawString(x, y, l)
         y -= size + 1 # tighter spacing
     return y
-
 def dataframe_to_pdf_bytes_landscape(df: pd.DataFrame, title="Report", logo_path=None):
     buf = BytesIO()
     c = canvas.Canvas(buf, pagesize=landscape(letter))
@@ -475,14 +454,24 @@ def dataframe_to_pdf_bytes_landscape(df: pd.DataFrame, title="Report", logo_path
             title_x = 40 + draw_w + 10
         except Exception:
             title_x = 40
-    c.setFont("Helvetica-Bold", 14)
+    c.setFont("Times-Bold", 14)
     c.drawString(title_x, y_top, title)
-    c.setFont("Helvetica", 8)
-    y = y_top - draw_h - 30
+    # Add school details
+    y_top -= 20 + draw_h
+    c.setFont("Times-Roman", 10)
+    c.drawString(40, y_top, SCHOOL_NAME)
+    y_top -= 12
+    c.drawString(40, y_top, SCHOOL_ADDRESS)
+    y_top -= 12
+    c.drawString(40, y_top, SCHOOL_EMAIL)
+    y_top -= 20
+    # Table
+    y = y_top
     cols = list(df.columns)
     usable_width = width - 80
     col_width = usable_width / max(1, len(cols))
     # Header
+    c.setFont("Times-Bold", 10)
     for i, col in enumerate(cols):
         c.drawString(40 + i * col_width, y, str(col))
     y -= 12
@@ -505,13 +494,12 @@ def dataframe_to_pdf_bytes_landscape(df: pd.DataFrame, title="Report", logo_path
             y = min(y, temp_y - 12) # adjust for next row
         y -= 12 # extra row spacing if needed
     # Footer
-    c.setFont("Helvetica", 7)
+    c.setFont("Times-Italic", 7)
     c.drawString(40, 20, f"Generated: {datetime.now().isoformat()} • {APP_TITLE}")
     c.showPage()
     c.save()
     buf.seek(0)
     return buf
-
 def download_options(df: pd.DataFrame, filename_base="report", title="Report"):
     col1, col2 = st.columns([1,1])
     with col1:
@@ -520,7 +508,6 @@ def download_options(df: pd.DataFrame, filename_base="report", title="Report"):
     with col2:
         pdf_buf = dataframe_to_pdf_bytes_landscape(df, title=title, logo_path=LOGO_FILENAME if logo_exists() else None)
         st.download_button("Download PDF (Landscape)", pdf_buf, f"{filename_base}.pdf", "application/pdf")
-
 # ---------------------------
 # Role-based access helper
 # ---------------------------
@@ -532,7 +519,6 @@ def require_role(allowed_roles):
     if user.get('role') not in allowed_roles:
         st.error("You do not have permission to access this section")
         st.stop()
-
 # ---------------------------
 # Login page (isolated)
 # ---------------------------
@@ -571,12 +557,10 @@ def show_login_page():
                         safe_rerun()
                     else:
                         st.error("Invalid credentials")
-
 # If not logged in, show only login page
 if not st.session_state.user:
     show_login_page()
     st.stop()
-
 # ---------------------------
 # Get defined terms
 # ---------------------------
@@ -585,7 +569,6 @@ def get_terms():
     df = pd.read_sql("SELECT id, academic_year, term, start_date, end_date FROM terms ORDER BY academic_year DESC, term DESC", conn)
     conn.close()
     return df
-
 # ---------------------------
 # Sidebar after login
 # ---------------------------
@@ -603,7 +586,6 @@ with st.sidebar:
         log_action("logout", f"user {uname} logged out", uname)
         st.session_state.user = None
         safe_rerun()
-
     st.markdown("---")
     st.subheader("Dashboard Filter")
     view_mode = st.radio("View Financials for", ["Current Term", "All Time"], index=0)
@@ -618,26 +600,22 @@ with st.sidebar:
         selected_idx = term_options.index(selected_term_str)
         selected_term = terms_df.iloc[selected_idx]
         selected_term_id = int(selected_term['id'])
-
     # Always update the stored selected term when the selectbox changes
     if terms_df.empty:
         st.session_state.selected_term = None
     else:
         # Convert the selected pandas Series to dict and store it
         st.session_state.selected_term = selected_term.to_dict()
-
 # ---------------------------
 # Main navigation
 # ---------------------------
 page = st.sidebar.radio("Menu", ["Dashboard", "Students", "Uniforms", "Finances", "Financial Report", "Fee Management", "Cashbook", "Audit Log"])
-
 # ---------------------------
 # Dashboard
 # ---------------------------
 if page == "Dashboard":
     conn = get_db_connection()
     st.header("Financial Overview")
-
     if view_mode == "Current Term":
         if st.session_state.selected_term is None:
             st.error("Select a term in the sidebar.")
@@ -659,7 +637,6 @@ if page == "Dashboard":
         out_where = "WHERE status IN ('Pending','Partially Paid')"
         params_date = ()
         params_term = ()
-
     col1, col2, col3, col4 = st.columns(4)
     try:
         total_income = conn.execute(f"SELECT COALESCE(SUM(amount),0) as s FROM incomes {inc_where}", params_date).fetchone()["s"] or 0
@@ -678,7 +655,6 @@ if page == "Dashboard":
     except Exception:
         outstanding_fees = 0
     col4.metric("Outstanding Fees", f"USh {outstanding_fees:,.0f}")
-
     colA, colB = st.columns(2)
     with colA:
         st.subheader("Recent Income (Last 5)")
@@ -728,7 +704,6 @@ if page == "Dashboard":
     except Exception:
         st.info("No monthly data available")
     conn.close()
-
 # ---------------------------
 # Students
 # ---------------------------
@@ -963,7 +938,7 @@ elif page == "Students":
                     FROM invoices i
                     JOIN students s ON i.student_id = s.id
                     JOIN classes c ON s.class_id = c.id
-                    WHERE c.name = ? AND i.status IN ('Pending', 'Partially Paid')
+                    {out_where} AND c.name = ?
                     GROUP BY s.id, s.name
                     ORDER BY Outstanding DESC
                 """, conn, params=student_params)
@@ -1090,7 +1065,6 @@ elif page == "Students":
                                     pass
                                 st.error(f"Error recording payment: {e}")
         conn.close()
-
 # ---------------------------
 # Uniforms
 # ---------------------------
@@ -1303,7 +1277,6 @@ elif page == "Uniforms":
                     except Exception as e:
                         st.error(f"Error deleting category: {e}")
     conn.close()
-
 # ---------------------------
 # Finances
 # ---------------------------
@@ -1620,7 +1593,6 @@ elif page == "Finances":
                     except Exception as e:
                         st.error(f"Error recording transfer: {e}")
             conn.close()
-
 # ---------------------------
 # Financial Report
 # ---------------------------
@@ -1704,7 +1676,6 @@ elif page == "Financial Report":
             except Exception as e:
                 st.error(f"Error generating report: {e}")
     conn.close()
-
 # ---------------------------
 # Cashbook
 # ---------------------------
@@ -1772,7 +1743,6 @@ elif page == "Cashbook":
         except Exception as e:
             st.error(f"Error loading cashbook: {e}")
     conn.close()
-
 # ---------------------------
 # Audit Log
 # ---------------------------
@@ -1790,7 +1760,6 @@ elif page == "Audit Log":
     except Exception as e:
         st.error(f"Error loading audit log: {e}")
     conn.close()
-
 # ---------------------------
 # Fee Management
 # ---------------------------
@@ -1980,9 +1949,8 @@ elif page == "Fee Management":
                     except Exception as e:
                         st.error(f"Error deleting invoice: {e}")
         conn.close()
-
 # ────────────────────────────────────────────────
-#   Footer / Final Closing
+# Footer / Final Closing
 # ────────────────────────────────────────────────
 st.markdown("---")
 st.caption(f"© COSNA School Management System • {datetime.now().year} • FULL FIXED VERSION")
