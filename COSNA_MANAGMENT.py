@@ -11,6 +11,7 @@ Cashbook (combined incomes/expenses running balance) view, updated to two-column
 Robust DB initialization and safe migrations
 Editing and deleting capabilities for saved information (students, classes, uniforms, finances, etc.)
 User-selectable current term with defined periods (start/end dates) affecting all sections
+Improved PDFs with school details and Times-Roman font
 Notes:
 Save the school badge image as "school_badge.png" in the app folder or upload it on the login page.
 This file is intended to replace the previous script. Back up your DB before running.
@@ -439,7 +440,7 @@ def df_to_excel_bytes(df: pd.DataFrame, sheet_name="Sheet1"):
     buf.seek(0)
     return buf
 
-def draw_wrapped_text(c, text, x, y, width, font='Helvetica', size=8):
+def draw_wrapped_text(c, text, x, y, width, font='Times-Roman', size=8):
     c.setFont(font, size)
     lines = []
     line = []
@@ -477,16 +478,27 @@ def dataframe_to_pdf_bytes_landscape(df: pd.DataFrame, title="Report", logo_path
             title_x = 40
     c.setFont("Helvetica-Bold", 14)
     c.drawString(title_x, y_top, title)
+    # Add school details
+    y_top -= 20
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(40, y_top, SCHOOL_NAME)
+    y_top -= 12
     c.setFont("Helvetica", 8)
-    y = y_top - draw_h - 30
+    c.drawString(40, y_top, SCHOOL_ADDRESS)
+    y_top -= 12
+    c.drawString(40, y_top, SCHOOL_EMAIL)
+    y_top -= 20
+    # Table
+    c.setFont("Times-Roman", 8)
     cols = list(df.columns)
     usable_width = width - 80
     col_width = usable_width / max(1, len(cols))
     # Header
     for i, col in enumerate(cols):
-        c.drawString(40 + i * col_width, y, str(col))
-    y -= 12
+        c.drawString(40 + i * col_width, y_top, str(col))
+    y_top -= 12
     # Rows
+    y = y_top
     for _, row in df.iterrows():
         if y < 40:
             c.showPage()
@@ -578,15 +590,6 @@ if not st.session_state.user:
     st.stop()
 
 # ---------------------------
-# Get defined terms
-# ---------------------------
-def get_terms():
-    conn = get_db_connection()
-    df = pd.read_sql("SELECT id, academic_year, term, start_date, end_date FROM terms ORDER BY academic_year DESC, term DESC", conn)
-    conn.close()
-    return df
-
-# ---------------------------
 # Sidebar after login
 # ---------------------------
 with st.sidebar:
@@ -610,21 +613,16 @@ with st.sidebar:
     terms_df = get_terms()
     if terms_df.empty:
         st.warning("No terms defined. Define terms in Fee Management.")
+        st.session_state.selected_term = None
         selected_term_id = None
-        selected_term = None
     else:
         term_options = terms_df.apply(lambda x: f"{x['academic_year']} - {x['term']}", axis=1).tolist()
         selected_term_str = st.selectbox("Select Current Term", term_options)
         selected_idx = term_options.index(selected_term_str)
         selected_term = terms_df.iloc[selected_idx]
+        st.session_state.selected_term = selected_term.to_dict()
         selected_term_id = int(selected_term['id'])
 
-    # Always update the stored selected term when the selectbox changes
-    if terms_df.empty:
-        st.session_state.selected_term = None
-    else:
-        # Convert the selected pandas Series to dict and store it
-        st.session_state.selected_term = selected_term.to_dict()
 # ---------------------------
 # Main navigation
 # ---------------------------
@@ -635,7 +633,7 @@ page = st.sidebar.radio("Menu", ["Dashboard", "Students", "Uniforms", "Finances"
 # ---------------------------
 if page == "Dashboard":
     conn = get_db_connection()
-    st.header("Financial Overview")
+    st.header(" Financial Overview")
 
     if view_mode == "Current Term":
         if st.session_state.selected_term is None:
@@ -645,7 +643,7 @@ if page == "Dashboard":
         tm = st.session_state.selected_term['term']
         start_d = st.session_state.selected_term['start_date']
         end_d = st.session_state.selected_term['end_date']
-        st.info(f"Showing data for {tm} {ay} ({start_d} to {end_d}). Change in sidebar.")
+        st.info(f"Showing data for {tm} {ay}. Change in sidebar for all time.")
         inc_where = "WHERE date BETWEEN ? AND ?"
         exp_where = "WHERE date BETWEEN ? AND ?"
         out_where = "WHERE academic_year = ? AND term = ? AND status IN ('Pending','Partially Paid')"
@@ -962,7 +960,7 @@ elif page == "Students":
                     FROM invoices i
                     JOIN students s ON i.student_id = s.id
                     JOIN classes c ON s.class_id = c.id
-                    WHERE c.name = ? AND i.status IN ('Pending', 'Partially Paid')
+                    {out_where} {'AND' if out_where else 'WHERE'} c.name = ?
                     GROUP BY s.id, s.name
                     ORDER BY Outstanding DESC
                 """, conn, params=student_params)
@@ -1008,6 +1006,7 @@ elif page == "Students":
                     'notes': 'Notes'
                 })
                 st.dataframe(display_invoices, use_container_width=True)
+                download_options(display_invoices, filename_base=f"invoices_student_{student_id}", title=f"Invoices for {student_name}")
                 st.subheader("Payment History")
                 try:
                     payments = pd.read_sql(f"SELECT p.id, p.payment_date, p.amount, p.payment_method, p.receipt_number, p.reference_number, p.notes FROM payments p JOIN invoices i ON p.invoice_id = i.id {inv_where} ORDER BY p.payment_date DESC", conn, params=inv_params)
@@ -1394,25 +1393,17 @@ elif page == "Finances":
             conn.close()
     with tab_reports:
         st.subheader("Transactions")
-        if view_mode == "Current Term" and st.session_state.selected_term:
-            start_d = st.session_state.selected_term['start_date']
-            end_d = st.session_state.selected_term['end_date']
-            tx_where = "WHERE date BETWEEN ? AND ?"
-            params = (start_d, end_d)
-        else:
-            tx_where = ""
-            params = ()
         conn = get_db_connection()
-        df_inc = pd.read_sql(f"""
+        df_inc = pd.read_sql("""
             SELECT i.date as Date, i.receipt_number as 'Receipt No', i.amount as Amount, i.source as Source, ec.name as Category, i.description as Description, i.payment_method as 'Payment Method', i.payer as Payer, i.received_by as 'Received By', i.created_by as 'Created By'
             FROM incomes i LEFT JOIN expense_categories ec ON i.category_id = ec.id
-            {tx_where} ORDER BY i.date DESC LIMIT 500
-        """, conn, params=params)
-        df_exp = pd.read_sql(f"""
+            ORDER BY i.date DESC LIMIT 500
+        """, conn)
+        df_exp = pd.read_sql("""
             SELECT e.date as Date, e.voucher_number as 'Voucher No', e.amount as Amount, ec.name as Category, e.description as Description, e.payment_method as 'Payment Method', e.payee as Payee, e.approved_by as 'Approved By', e.created_by as 'Created By'
             FROM expenses e LEFT JOIN expense_categories ec ON e.category_id = ec.id
-            {tx_where} ORDER BY e.date DESC LIMIT 500
-        """, conn, params=params)
+            ORDER BY e.date DESC LIMIT 500
+        """, conn)
         st.write("Recent Incomes")
         if df_inc.empty:
             st.info("No incomes recorded")
@@ -1628,14 +1619,8 @@ elif page == "Financial Report":
     conn = get_db_connection()
     st.subheader("Generate Report")
     report_type = st.selectbox("Report Type", ["Income vs Expense (date range)", "By Category", "Outstanding Invoices", "Student Payment Summary"])
-    if view_mode == "Current Term" and st.session_state.selected_term:
-        default_start = date.fromisoformat(st.session_state.selected_term['start_date'])
-        default_end = date.fromisoformat(st.session_state.selected_term['end_date'])
-    else:
-        default_start = date.today().replace(day=1)
-        default_end = date.today()
-    start_date = st.date_input("Start Date", default_start)
-    end_date = st.date_input("End Date", default_end)
+    start_date = st.date_input("Start Date", date.today().replace(day=1))
+    end_date = st.date_input("End Date", date.today())
     if start_date > end_date:
         st.error("Start date must be before end date")
     else:
@@ -1662,11 +1647,11 @@ elif page == "Financial Report":
                     df = pd.read_sql("""
                         SELECT ec.name as Category, SUM(COALESCE(i.amount,0)) as 'Total Income', SUM(COALESCE(e.amount,0)) as 'Total Expense'
                         FROM expense_categories ec
-                        LEFT JOIN incomes i ON i.category_id = ec.id AND i.date BETWEEN ? AND ?
-                        LEFT JOIN expenses e ON e.category_id = ec.id AND e.date BETWEEN ? AND ?
+                        LEFT JOIN incomes i ON i.category_id = ec.id
+                        LEFT JOIN expenses e ON e.category_id = ec.id
                         WHERE ec.category_type = ?
                         GROUP BY ec.name
-                    """, conn, params=(start_date.isoformat(), end_date.isoformat(), start_date.isoformat(), end_date.isoformat(), cat))
+                    """, conn, params=(cat,))
                     if df.empty:
                         st.info("No data for selected category type")
                     else:
@@ -1714,7 +1699,6 @@ elif page == "Cashbook":
     if view_mode == "Current Term" and st.session_state.selected_term:
         start_date = date.fromisoformat(st.session_state.selected_term['start_date'])
         end_date = date.fromisoformat(st.session_state.selected_term['end_date'])
-        st.info(f"Showing for selected term: {st.session_state.selected_term['term']} {st.session_state.selected_term['academic_year']}")
     else:
         start_date = st.date_input("Start Date", date.today().replace(day=1))
         end_date = st.date_input("End Date", date.today())
@@ -1796,51 +1780,7 @@ elif page == "Audit Log":
 elif page == "Fee Management":
     require_role(["Admin", "Accountant"])
     st.header("Fee Management")
-    tab_term, tab_define, tab_generate, tab_edit_inv, tab_delete_inv = st.tabs(["Define Terms", "Define Fee Structure", "Generate Invoice", "Edit Invoice", "Delete Invoice"])
-    with tab_term:
-        st.subheader("Define Academic Terms")
-        conn = get_db_connection()
-        with st.form("define_term_form"):
-            academic_year = st.text_input("Academic Year (e.g., 2025/2026)")
-            term = st.selectbox("Term", ["Term 1", "Term 2", "Term 3"])
-            start_date = st.date_input("Start Date")
-            end_date = st.date_input("End Date")
-            submit_term = st.form_submit_button("Create/Update Term")
-        if submit_term:
-            if start_date > end_date:
-                st.error("Start date must be before end date")
-            else:
-                try:
-                    cur = conn.cursor()
-                    existing = cur.execute("SELECT id FROM terms WHERE academic_year = ? AND term = ?", (academic_year, term)).fetchone()
-                    if existing:
-                        cur.execute("""
-                            UPDATE terms SET start_date = ?, end_date = ?
-                            WHERE id = ?
-                        """, (start_date.isoformat(), end_date.isoformat(), existing[0]))
-                        conn.commit()
-                        st.success("Term updated")
-                        log_action("update_term", f"Updated {term} {academic_year}", st.session_state.user['username'])
-                    else:
-                        cur.execute("""
-                            INSERT INTO terms (academic_year, term, start_date, end_date)
-                            VALUES (?, ?, ?, ?)
-                        """, (academic_year, term, start_date.isoformat(), end_date.isoformat()))
-                        conn.commit()
-                        st.success("Term defined")
-                        log_action("define_term", f"Defined {term} {academic_year}", st.session_state.user['username'])
-                    safe_rerun()
-                except sqlite3.IntegrityError:
-                    st.error("Term for this academic year already exists")
-                except Exception as e:
-                    st.error(f"Error defining term: {e}")
-        st.subheader("Existing Terms")
-        terms_df = get_terms()
-        if terms_df.empty:
-            st.info("No terms defined yet")
-        else:
-            st.dataframe(terms_df[['academic_year', 'term', 'start_date', 'end_date']], use_container_width=True)
-        conn.close()
+    tab_define, tab_generated, tab_edit_inv, tab_delete_inv = st.tabs(["Define Fee Structure", "Generate Invoice", "Edit Invoice", "Delete Invoice"])
     with tab_define:
         st.subheader("Define Fee Structure")
         conn = get_db_connection()
@@ -1852,7 +1792,7 @@ elif page == "Fee Management":
                 cls_name = st.selectbox("Class", classes["name"].tolist())
                 cls_id = int(classes[classes["name"] == cls_name]["id"].iloc[0])
                 term = st.selectbox("Term", ["Term 1","Term 2","Term 3"])
-                academic_year = st.text_input("Academic Year (e.g., 2025/2026)")
+                academic_year = st.text_input("Academic Year (e.g., 2025/2026)", value=st.session_state.current_academic_year)
                 tuition_fee = st.number_input("Tuition Fee", min_value=0.0, value=0.0, step=100.0)
                 uniform_fee = st.number_input("Uniform Fee", min_value=0.0, value=0.0, step=100.0)
                 activity_fee = st.number_input("Activity Fee", min_value=0.0, value=0.0, step=100.0)
@@ -1882,11 +1822,13 @@ elif page == "Fee Management":
                         conn.commit()
                         st.success("Fee structure created")
                         log_action("create_fee_structure", f"class {cls_name} term {term} year {academic_year} total {total_fee}", st.session_state.user['username'])
+                        st.session_state.current_academic_year = academic_year
+                        st.session_state.current_term = term
                         safe_rerun()
                 except Exception as e:
                     st.error(f"Error saving fee structure: {e}")
         conn.close()
-    with tab_generate:
+    with tab_generated:
         st.subheader("Generate Invoice")
         conn = get_db_connection()
         students = pd.read_sql("SELECT s.id, s.name, c.name as class_name FROM students s JOIN classes c ON s.class_id = c.id ORDER BY s.name", conn)
@@ -1984,5 +1926,5 @@ elif page == "Fee Management":
 #   Footer / Final Closing
 # ────────────────────────────────────────────────
 st.markdown("---")
-st.caption(f"© COSNA School Management System • {datetime.now().year} • FULL FIXED VERSION")
+st.caption(f"© COSNA School Management System • {datetime.now().year} • Final Fixed Version")
 st.caption("Developed for Cosna Daycare, Nursery, Day and Boarding Primary School Kiyinda-Mityana")
