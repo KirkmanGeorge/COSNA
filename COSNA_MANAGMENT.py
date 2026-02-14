@@ -104,6 +104,27 @@ def safe_rerun():
             st.stop()
     except Exception:
         pass
+# ────────────────────────────────────────────────
+# NEW: get_terms() function  ← this was missing
+# ────────────────────────────────────────────────
+def get_terms():
+    conn = get_db_connection()
+    try:
+        df = pd.read_sql_query("""
+            SELECT id, academic_year, term, start_date, end_date
+            FROM terms
+            ORDER BY academic_year DESC, 
+                     CASE term 
+                         WHEN 'Term 1' THEN 1
+                         WHEN 'Term 2' THEN 2
+                         WHEN 'Term 3' THEN 3
+                     END DESC
+        """, conn)
+        return df
+    except Exception:
+        return pd.DataFrame()
+    finally:
+        conn.close()
 
 # ---------------------------
 # DB migration helpers
