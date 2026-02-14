@@ -104,21 +104,7 @@ def safe_rerun():
             st.stop()
     except Exception:
         pass
-# ────────────────────────────────────────────────
-# get_terms – MUST BE DEFINED BEFORE SIDEBAR
-# ────────────────────────────────────────────────
-def get_terms():
-    conn = get_db()
-    try:
-        df = pd.read_sql("""
-            SELECT id, academic_year, term, start_date, end_date
-            FROM terms
-            ORDER BY academic_year DESC, term DESC
-        """, conn)
-    except:
-        df = pd.DataFrame()
-    conn.close()
-    return df
+
 # ---------------------------
 # DB migration helpers
 # ---------------------------
