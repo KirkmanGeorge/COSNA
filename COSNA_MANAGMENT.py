@@ -856,7 +856,7 @@ elif page == "Students":
                     cls_options = cls_df["name"].tolist() if not cls_df.empty else []
                     current_cls_name = conn.execute("SELECT name FROM classes WHERE id = ?", (student_row['class_id'],)).fetchone()[0] if student_row['class_id'] else "-- No class --"
                     cls_name = st.selectbox("Class", cls_options, index=cls_options.index(current_cls_name) if current_cls_name in cls_options else 0)
-                    cls_id = int(cls_df[cls_df["name"] == cls_name]["id"].iloc[0])
+                    cls_id = int(cls_df[cls_df["name"] == cls_name]["id"].iloc[0]) if cls_name in cls_options else None
                     student_type = st.radio("Student Type", ["New", "Returning"], index=0 if student_row['student_type'] == "New" else 1)
                 submitted = st.form_submit_button("Update Student")
             if submitted:
@@ -1782,99 +1782,81 @@ elif page == "Fee Management":
             else:
                 term = term_row['name']
                 academic_year = term_row['academic_year']
-                st.subheader("Define Fee Structure")
-                conn = get_db_connection()
-                classes = pd.read_sql("SELECT id, name FROM classes ORDER BY name", conn)
-                term_id = st.session_state.get('term_id')
-                if not term_id:
-                    st.info("Select a term in the sidebar to define fee structure.")
-                else:
-                    term_row = conn.execute("SELECT name, academic_year FROM terms WHERE id = ?", (term_id,)).fetchone()
-                    if not term_row:
-                        st.error("Invalid term selected.")
+                st.info(f"Defining fee structure for: **{term} - {academic_year}**")
+
+                with st.form("fee_structure_form"):
+                    cls_name = st.selectbox("Class", classes["name"].tolist())
+                    cls_id = int(classes[classes["name"] == cls_name]["id"].iloc[0]) if not classes.empty else None
+
+                    tuition_fee = st.number_input("Tuition Fee (USh)", min_value=0.0, value=0.0, step=1000.0)
+                    uniform_fee = st.number_input("Uniform Fee (USh)", min_value=0.0, value=0.0, step=500.0)
+                    activity_fee = st.number_input("Activity Fee (USh)", min_value=0.0, value=0.0, step=500.0)
+                    exam_fee    = st.number_input("Exam Fee (USh)", min_value=0.0, value=0.0, step=500.0)
+                    library_fee = st.number_input("Library Fee (USh)", min_value=0.0, value=0.0, step=500.0)
+                    other_fee   = st.number_input("Other Fee (USh)", min_value=0.0, value=0.0, step=500.0)
+
+                    create_fee = st.form_submit_button("Save / Update Fee Structure")
+
+                if create_fee:
+                    if cls_id is None:
+                        st.error("Please select a valid class.")
                     else:
-                        term = term_row['name']
-                        academic_year = term_row['academic_year']
-                        st.info(f"Defining fee structure for: **{term} - {academic_year}**")
+                        try:
+                            total_fee = (
+                                tuition_fee + uniform_fee + activity_fee +
+                                exam_fee + library_fee + other_fee
+                            )
 
-                        with st.form("fee_structure_form"):
-                            cls_name = st.selectbox("Class", classes["name"].tolist())
-                            cls_id = int(classes[classes["name"] == cls_name]["id"].iloc[0]) if not classes.empty else None
+                            cur = conn.cursor()
 
-                            tuition_fee = st.number_input("Tuition Fee (USh)", min_value=0.0, value=0.0, step=1000.0)
-                            uniform_fee = st.number_input("Uniform Fee (USh)", min_value=0.0, value=0.0, step=500.0)
-                            activity_fee = st.number_input("Activity Fee (USh)", min_value=0.0, value=0.0, step=500.0)
-                            exam_fee    = st.number_input("Exam Fee (USh)", min_value=0.0, value=0.0, step=500.0)
-                            library_fee = st.number_input("Library Fee (USh)", min_value=0.0, value=0.0, step=500.0)
-                            other_fee   = st.number_input("Other Fee (USh)", min_value=0.0, value=0.0, step=500.0)
+                            # Check if already exists for this class + term + year
+                            existing = cur.execute("""
+                                SELECT id FROM fee_structure 
+                                WHERE class_id = ? AND term = ? AND academic_year = ?
+                            """, (cls_id, term, academic_year)).fetchone()
 
-                            create_fee = st.form_submit_button("Save / Update Fee Structure")
-
-                        if create_fee:
-                            if cls_id is None:
-                                st.error("Please select a valid class.")
+                            if existing:
+                                cur.execute("""
+                                    UPDATE fee_structure
+                                    SET 
+                                        tuition_fee = ?, uniform_fee = ?, activity_fee = ?,
+                                        exam_fee = ?, library_fee = ?, other_fee = ?,
+                                        total_fee = ?, term_id = ?, created_at = CURRENT_TIMESTAMP
+                                    WHERE id = ?
+                                """, (
+                                    tuition_fee, uniform_fee, activity_fee,
+                                    exam_fee, library_fee, other_fee,
+                                    total_fee, term_id, existing[0]
+                                ))
+                                action = "updated"
                             else:
-                                try:
-                                    total_fee = (
-                                        tuition_fee + uniform_fee + activity_fee +
-                                        exam_fee + library_fee + other_fee
-                                    )
+                                cur.execute("""
+                                    INSERT INTO fee_structure (
+                                        class_id, term, academic_year,
+                                        tuition_fee, uniform_fee, activity_fee,
+                                        exam_fee, library_fee, other_fee, total_fee,
+                                        term_id
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """, (
+                                    cls_id, term, academic_year,
+                                    tuition_fee, uniform_fee, activity_fee,
+                                    exam_fee, library_fee, other_fee, total_fee,
+                                    term_id
+                                ))
+                                action = "created"
 
-                                    cur = conn.cursor()
+                            conn.commit()
 
-                                    # Check if already exists for this class + term + year
-                                    existing = cur.execute("""
-                                        SELECT id FROM fee_structure 
-                                        WHERE class_id = ? AND term = ? AND academic_year = ?
-                                    """, (cls_id, term, academic_year)).fetchone()
+                            st.success(f"Fee structure for {cls_name} ({term} {academic_year}) {action} successfully. Total: USh {total_fee:,.0f}")
+                            log_action(
+                                f"{action}_fee_structure",
+                                f"{cls_name} - {term} {academic_year} - USh {total_fee:,.0f}",
+                                st.session_state.user['username']
+                            )
+                            safe_rerun()
 
-                                    if existing:
-                                        cur.execute("""
-                                            UPDATE fee_structure
-                                            SET 
-                                                tuition_fee = ?, uniform_fee = ?, activity_fee = ?,
-                                                exam_fee = ?, library_fee = ?, other_fee = ?,
-                                                total_fee = ?, term_id = ?, created_at = CURRENT_TIMESTAMP
-                                            WHERE id = ?
-                                        """, (
-                                            tuition_fee, uniform_fee, activity_fee,
-                                            exam_fee, library_fee, other_fee,
-                                            total_fee, term_id, existing[0]
-                                        ))
-                                        action = "updated"
-                                    else:
-                                        cur.execute("""
-                                            INSERT INTO fee_structure (
-                                                class_id, term, academic_year,
-                                                tuition_fee, uniform_fee, activity_fee,
-                                                exam_fee, library_fee, other_fee, total_fee,
-                                                term_id
-                                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                        """, (
-                                            cls_id, term, academic_year,
-                                            tuition_fee, uniform_fee, activity_fee,
-                                            exam_fee, library_fee, other_fee, total_fee,
-                                            term_id
-                                        ))
-                                        action = "created"
-
-                                    conn.commit()
-
-                                    st.success(f"Fee structure for {cls_name} ({term} {academic_year}) {action} successfully. Total: USh {total_fee:,.0f}")
-                                    log_action(
-                                        f"{action}_fee_structure",
-                                        f"{cls_name} - {term} {academic_year} - USh {total_fee:,.0f}",
-                                        st.session_state.user['username']
-                                    )
-                                    safe_rerun()
-
-                                except Exception as e:
-                                    st.error(f"Error saving fee structure: {str(e)}")
-        conn.close()
-
-    # ────────────────────────────────────────────────
-    #   Generate Invoice
-    # ────────────────────────────────────────────────
+                        except Exception as e:
+                            st.error(f"Error saving fee structure: {str(e)}")
     with tab_generate:
         st.subheader("Generate Invoice")
         conn = get_db_connection()
@@ -1893,7 +1875,7 @@ elif page == "Fee Management":
                 "Select Student",
                 students.apply(lambda x: f"{x['name']} - {x['class_name']} (ID: {x['id']})", axis=1)
             )
-            student_id = int(selected_student_str.split("(ID: ")[1][:-1])
+            student_id = int(selected_student_str.split("(ID: ")[1].replace(")", ""))
 
             # Get available fee structures for this student's class
             fee_structures = pd.read_sql("""
@@ -1974,18 +1956,13 @@ elif page == "Fee Management":
                         except Exception as e:
                             st.error(f"Error creating invoice: {str(e)}")
 
-        conn.close()
-
-    # ────────────────────────────────────────────────
-    #   Edit & Delete Invoice
-    # ────────────────────────────────────────────────
     with tab_edit_inv:
         st.subheader("Edit Existing Invoice")
         conn = get_db_connection()
 
         invoices = pd.read_sql("""
             SELECT i.id, i.invoice_number, s.name as student_name, 
-                   i.academic_year, i.term, i.total_amount, i.balance_amount, i.status
+                   i.academic_year, i.term, i.total_amount, i.balance_amount, i.status, i.notes
             FROM invoices i
             JOIN students s ON i.student_id = s.id
             ORDER BY i.issue_date DESC
@@ -2064,9 +2041,172 @@ elif page == "Fee Management":
         conn.close()
 
 # ────────────────────────────────────────────────
-#   Footer
+# Terms Management – FIXED VERSION
+# ────────────────────────────────────────────────
+elif page == "Terms Management":
+    require_role(["Admin"])
+    st.header("Terms Management")
+    conn = get_db_connection()
+    tab_view, tab_add, tab_close, tab_edit = st.tabs(["View Terms", "Add New Term", "Close/Set Current Term", "Edit Term"])
+    with tab_view:
+        st.subheader("All Terms")
+        terms_df = pd.read_sql("""
+            SELECT id, name, academic_year, start_date, end_date, 
+                   CASE WHEN is_current = 1 THEN 'Yes' ELSE 'No' END as Current,
+                   created_at
+            FROM terms 
+            ORDER BY start_date DESC
+        """, conn)
+        if terms_df.empty:
+            st.info("No terms created yet")
+        else:
+            st.dataframe(terms_df, use_container_width=True)
+            download_options(terms_df, filename_base="all_terms", title="All Academic Terms")
+    with tab_add:
+        st.subheader("Create New Term")
+        with st.form("add_term_form"):
+            term_name = st.selectbox("Term Name", ["Term 1", "Term 2", "Term 3"])
+            academic_year = st.text_input("Academic Year", value="2026")
+            start_date = st.date_input("Start Date")
+            end_date = st.date_input("End Date")
+            make_current = st.checkbox("Make this the current active term", value=True)
+            submit_term = st.form_submit_button("Create Term")
+        if submit_term:
+            if start_date >= end_date:
+                st.error("End date must be after start date")
+            else:
+                try:
+                    cur = conn.cursor()
+                    overlap = cur.execute("""
+                        SELECT COUNT(*) FROM terms 
+                        WHERE (start_date <= ? AND end_date >= ?) 
+                           OR (start_date <= ? AND end_date >= ?)
+                    """, (end_date.isoformat(), start_date.isoformat(), 
+                          end_date.isoformat(), start_date.isoformat())).fetchone()[0]
+                    if overlap > 0:
+                        st.error("This date range overlaps with an existing term")
+                    else:
+                        cur.execute("""
+                            INSERT INTO terms (name, academic_year, start_date, end_date, is_current)
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (term_name.strip(), academic_year.strip(), 
+                              start_date.isoformat(), end_date.isoformat(), 1 if make_current else 0))
+                        if make_current:
+                            cur.execute("UPDATE terms SET is_current = 0 WHERE id != last_insert_rowid()")
+                        conn.commit()
+                        st.success(f"Term '{term_name} {academic_year}' created successfully")
+                        log_action("create_term", f"Created term {term_name} {academic_year} ({start_date} to {end_date})", 
+                                   st.session_state.user['username'])
+                        safe_rerun()
+                except Exception as e:
+                    st.error(f"Error creating term: {str(e)}")
+    with tab_close:
+        st.subheader("Set/Close Current Term")
+        current_term = conn.execute("SELECT * FROM terms WHERE is_current = 1").fetchone()
+        if current_term:
+            st.info(f"Current active term: **{current_term['name']} {current_term['academic_year']}** "
+                    f"({current_term['start_date']} → {current_term['end_date']})")
+        else:
+            st.warning("No current term is set.")
+
+        all_terms = pd.read_sql("SELECT id, name, academic_year FROM terms ORDER BY start_date DESC", conn)
+        if not all_terms.empty:
+            selected = st.selectbox(
+                "Select term to make current",
+                all_terms.apply(lambda x: f"{x['name']} {x['academic_year']} (ID: {x['id']})", axis=1)
+            )
+            term_id_to_set = int(selected.split("(ID: ")[1].replace(")", ""))
+            
+            if st.button("Set as Current Term"):
+                try:
+                    cur = conn.cursor()
+                    cur.execute("UPDATE terms SET is_current = 0")
+                    cur.execute("UPDATE terms SET is_current = 1 WHERE id = ?", (term_id_to_set,))
+                    conn.commit()
+                    st.success("Current term updated successfully")
+                    st.session_state['term_id'] = term_id_to_set
+                    log_action("set_current_term", f"Set term ID {term_id_to_set} as current", 
+                               st.session_state.user['username'])
+                    safe_rerun()
+                except Exception as e:
+                    st.error(f"Error setting current term: {e}")
+    with tab_edit:
+        st.subheader("Edit Existing Term")
+        terms_list = pd.read_sql("SELECT id, name || ' ' || academic_year as display FROM terms ORDER BY start_date DESC", conn)
+        if terms_list.empty:
+            st.info("No terms to edit")
+        else:
+            selected_edit = st.selectbox("Select Term to Edit", terms_list['display'].tolist())
+            term_id_edit = terms_list[terms_list['display'] == selected_edit]['id'].iloc[0]
+            term_data = conn.execute("SELECT * FROM terms WHERE id = ?", (term_id_edit,)).fetchone()
+            
+            if term_data is None:
+                st.error("Selected term not found in database.")
+            else:
+                with st.form("edit_term_form"):
+                    term_options = ["Term 1", "Term 2", "Term 3"]
+                    
+                    current_name = (term_data['name'] or "").strip()
+                    try:
+                        default_index = term_options.index(current_name)
+                    except ValueError:
+                        default_index = 0
+                        st.warning(
+                            f"Stored term name '{current_name}' is not one of the standard options "
+                            f"({', '.join(term_options)}). Defaulting to 'Term 1' for editing."
+                        )
+                    
+                    edit_name = st.selectbox("Term Name", term_options, index=default_index)
+                    edit_year = st.text_input("Academic Year", value=term_data['academic_year'] or "")
+                    edit_start = st.date_input(
+                        "Start Date", 
+                        value=date.fromisoformat(term_data['start_date']) if term_data['start_date'] else date.today()
+                    )
+                    edit_end = st.date_input(
+                        "End Date", 
+                        value=date.fromisoformat(term_data['end_date']) if term_data['end_date'] else date.today()
+                    )
+                    edit_current = st.checkbox("Mark as Current Term", value=bool(term_data['is_current']))
+                    submit_edit_term = st.form_submit_button("Save Changes")
+
+                if submit_edit_term:
+                    if edit_start >= edit_end:
+                        st.error("End date must be after start date")
+                    else:
+                        try:
+                            cur = conn.cursor()
+                            cur.execute("""
+                                UPDATE terms 
+                                SET name = ?, academic_year = ?, start_date = ?, end_date = ?, is_current = ?
+                                WHERE id = ?
+                            """, (
+                                edit_name.strip(), 
+                                edit_year.strip(), 
+                                edit_start.isoformat(), 
+                                edit_end.isoformat(), 
+                                1 if edit_current else 0, 
+                                term_id_edit
+                            ))
+                            
+                            if edit_current:
+                                cur.execute("UPDATE terms SET is_current = 0 WHERE id != ?", (term_id_edit,))
+                            
+                            conn.commit()
+                            st.success("Term updated successfully")
+                            if edit_current:
+                                st.session_state['term_id'] = term_id_edit
+                            log_action("edit_term", f"Edited term ID {term_id_edit} to {edit_name} {edit_year}", 
+                                       st.session_state.user['username'])
+                            safe_rerun()
+                        except Exception as e:
+                            st.error(f"Error updating term: {str(e)}")
+
+    conn.close()
+
+# ────────────────────────────────────────────────
+#   Footer / Final Closing
 # ────────────────────────────────────────────────
 st.markdown("---")
-st.caption(f"© COSNA School Management System • {datetime.now().year} • vFinal Fixed")
+st.caption(f"© COSNA School Management System • {datetime.now().year} • Final Fixed Version")
 st.caption("Developed for Cosna Daycare, Nursery, Day and Boarding Primary School Kiyinda-Mityana")
-                
+            
