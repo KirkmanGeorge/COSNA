@@ -380,14 +380,6 @@ def initialize_database():
                 conn.commit()
     except Exception:
         pass
-    # Seed default term if none
-    try:
-        if conn.execute("SELECT COUNT(*) FROM terms").fetchone()[0] == 0:
-            conn.execute("INSERT INTO terms (name, academic_year, start_date, end_date, is_current) VALUES (?, ?, ?, ?, ?)",
-                         ("Term 1", "2026", "2026-01-01", "2026-04-30", 1))
-            conn.commit()
-    except Exception:
-        pass
     conn.close()
 initialize_database()
 # ---------------------------
@@ -619,11 +611,18 @@ with st.sidebar:
     if terms_df.empty:
         st.info("No terms. Create in Terms Management.")
     else:
-        term_names = terms_df['name'].tolist()
-        current_row = terms_df[terms_df['id'] == st.session_state['term_id']].iloc[0] if st.session_state['term_id'] in terms_df['id'].values else terms_df.iloc[0]
-        selected_index = term_names.index(current_row['name'])
-        selected_name = st.selectbox("Select Term", term_names, index=selected_index)
-        st.session_state['term_id'] = terms_df[terms_df['name'] == selected_name]['id'].iloc[0]
+        display_terms = terms_df.apply(lambda row: f"{row['name']} ({row['academic_year']})", axis=1).tolist()
+        if st.session_state['term_id'] in terms_df['id'].values.to_list():
+            current_row = terms_df[terms_df['id'] == st.session_state['term_id']].iloc[0]
+            current_display = f"{current_row['name']} ({current_row['academic_year']})"
+            selected_index = display_terms.index(current_display) if current_display in display_terms else 0
+        else:
+            selected_index = 0
+        selected_display = st.selectbox("Select Term", display_terms, index=selected_index)
+        selected_name, selected_year = selected_display.rsplit(' (', 1)
+        selected_name = selected_name.strip()
+        selected_year = selected_year.replace(')', '').strip()
+        st.session_state['term_id'] = terms_df[(terms_df['name'] == selected_name) & (terms_df['academic_year'] == selected_year)]['id'].iloc[0]
 # ---------------------------
 # Main navigation
 # ---------------------------
@@ -1860,101 +1859,106 @@ elif page == "Fee Management":
     with tab_generate:
         st.subheader("Generate Invoice")
         conn = get_db_connection()
-
-        students = pd.read_sql("""
-            SELECT s.id, s.name, c.name as class_name 
-            FROM students s 
-            JOIN classes c ON s.class_id = c.id 
-            ORDER BY s.name
-        """, conn)
-
-        if students.empty:
-            st.info("No students available yet.")
+        term_id = st.session_state.get('term_id')
+        if not term_id or not is_term_current(term_id):
+            st.error("Can only generate invoices in the current active term. Please select the current term in the sidebar.")
         else:
-            selected_student_str = st.selectbox(
-                "Select Student",
-                students.apply(lambda x: f"{x['name']} - {x['class_name']} (ID: {x['id']})", axis=1)
-            )
-            student_id = int(selected_student_str.split("(ID: ")[1].replace(")", ""))
+            students = pd.read_sql("""
+                SELECT s.id, s.name, c.name as class_name 
+                FROM students s 
+                JOIN classes c ON s.class_id = c.id 
+                ORDER BY s.name
+            """, conn)
 
-            # Get available fee structures for this student's class
-            fee_structures = pd.read_sql("""
-                SELECT fs.id, fs.term, fs.academic_year, fs.total_fee,
-                       fs.tuition_fee, fs.uniform_fee, fs.activity_fee,
-                       fs.exam_fee, fs.library_fee, fs.other_fee
-                FROM fee_structure fs
-                WHERE fs.class_id = (SELECT class_id FROM students WHERE id = ?)
-                ORDER BY fs.academic_year DESC, fs.term
-            """, conn, params=(student_id,))
-
-            if fee_structures.empty:
-                st.warning("No fee structure defined for this student's class yet.")
+            if students.empty:
+                st.info("No students available yet.")
             else:
-                options = fee_structures.apply(
-                    lambda x: f"{x['academic_year']} - {x['term']} → USh {x['total_fee']:,.0f}", axis=1
-                ).tolist()
+                selected_student_str = st.selectbox(
+                    "Select Student",
+                    students.apply(lambda x: f"{x['name']} - {x['class_name']} (ID: {x['id']})", axis=1)
+                )
+                student_id = int(selected_student_str.split("(ID: ")[1].replace(")", ""))
 
-                chosen = st.selectbox("Select Fee Structure to Invoice", options)
+                # Get available fee structures for this student's class
+                fee_structures = pd.read_sql("""
+                    SELECT fs.id, fs.term, fs.academic_year, fs.total_fee,
+                           fs.tuition_fee, fs.uniform_fee, fs.activity_fee,
+                           fs.exam_fee, fs.library_fee, fs.other_fee
+                    FROM fee_structure fs
+                    WHERE fs.class_id = (SELECT class_id FROM students WHERE id = ?)
+                    ORDER BY fs.academic_year DESC, fs.term
+                """, conn, params=(student_id,))
 
-                if chosen:
-                    idx = options.index(chosen)
-                    fs = fee_structures.iloc[idx]
+                if fee_structures.empty:
+                    st.warning("No fee structure defined for this student's class yet.")
+                else:
+                    options = fee_structures.apply(
+                        lambda x: f"{x['academic_year']} - {x['term']} → USh {x['total_fee']:,.0f}", axis=1
+                    ).tolist()
 
-                    st.markdown(f"**Structure details:**")
-                    st.write(f"Academic Year: {fs['academic_year']}")
-                    st.write(f"Term: {fs['term']}")
-                    st.write(f"Total Fee: **USh {fs['total_fee']:,.0f}**")
+                    chosen = st.selectbox("Select Fee Structure to Invoice", options)
 
-                    with st.form("generate_invoice_form"):
-                        issue_date = st.date_input("Issue Date", value=date.today())
-                        due_date   = st.date_input("Due Date",   value=date.today())
-                        notes      = st.text_area("Notes / Remarks", height=80)
+                    if chosen:
+                        idx = options.index(chosen)
+                        fs = fee_structures.iloc[idx]
 
-                        submitted = st.form_submit_button("Generate Invoice")
+                        st.markdown(f"**Structure details:**")
+                        st.write(f"Academic Year: {fs['academic_year']}")
+                        st.write(f"Term: {fs['term']}")
+                        st.write(f"Total Fee: **USh {fs['total_fee']:,.0f}**")
 
-                    if submitted:
-                        try:
-                            cur = conn.cursor()
+                        with st.form("generate_invoice_form"):
+                            issue_date = st.date_input("Issue Date", value=date.today())
+                            due_date   = st.date_input("Due Date",   value=date.today())
+                            notes      = st.text_area("Notes / Remarks", height=80)
 
-                            # Prevent duplicate invoice for same student + term + year
-                            duplicate = cur.execute("""
-                                SELECT id FROM invoices 
-                                WHERE student_id = ? 
-                                  AND term = ? 
-                                  AND academic_year = ?
-                            """, (student_id, fs['term'], fs['academic_year'])).fetchone()
+                            submitted = st.form_submit_button("Generate Invoice")
 
-                            if duplicate:
-                                st.error("An invoice already exists for this student, term, and academic year.")
-                            else:
-                                inv_number = generate_invoice_number()
+                        if submitted:
+                            try:
+                                cur = conn.cursor()
 
-                                cur.execute("""
-                                    INSERT INTO invoices (
-                                        invoice_number, student_id, issue_date, due_date,
-                                        academic_year, term, total_amount, balance_amount,
-                                        status, notes, created_by, term_id
-                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?, ?)
-                                """, (
-                                    inv_number, student_id, issue_date.isoformat(), due_date.isoformat(),
-                                    fs['academic_year'], fs['term'], fs['total_fee'], fs['total_fee'],
-                                    notes, st.session_state.user['username'], term_id
-                                ))
+                                # Prevent duplicate invoice for same student + term + year
+                                duplicate = cur.execute("""
+                                    SELECT id FROM invoices 
+                                    WHERE student_id = ? 
+                                      AND term = ? 
+                                      AND academic_year = ?
+                                """, (student_id, fs['term'], fs['academic_year'])).fetchone()
 
-                                conn.commit()
+                                if duplicate:
+                                    st.error("An invoice already exists for this student, term, and academic year.")
+                                else:
+                                    inv_number = generate_invoice_number()
 
-                                st.success(f"Invoice **{inv_number}** generated successfully!")
-                                st.balloons()
+                                    cur.execute("""
+                                        INSERT INTO invoices (
+                                            invoice_number, student_id, issue_date, due_date,
+                                            academic_year, term, total_amount, balance_amount,
+                                            status, notes, created_by, term_id
+                                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?, ?)
+                                    """, (
+                                        inv_number, student_id, issue_date.isoformat(), due_date.isoformat(),
+                                        fs['academic_year'], fs['term'], fs['total_fee'], fs['total_fee'],
+                                        notes, st.session_state.user['username'], term_id
+                                    ))
 
-                                log_action(
-                                    "generate_invoice",
-                                    f"Invoice {inv_number} - {fs['total_fee']:,.0f} - {selected_student_str}",
-                                    st.session_state.user['username']
-                                )
-                                safe_rerun()
+                                    conn.commit()
 
-                        except Exception as e:
-                            st.error(f"Error creating invoice: {str(e)}")
+                                    st.success(f"Invoice **{inv_number}** generated successfully!")
+                                    st.balloons()
+
+                                    log_action(
+                                        "generate_invoice",
+                                        f"Invoice {inv_number} - {fs['total_fee']:,.0f} - {selected_student_str}",
+                                        st.session_state.user['username']
+                                    )
+                                    safe_rerun()
+
+                            except Exception as e:
+                                st.error(f"Error creating invoice: {str(e)}")
+
+        conn.close()
 
     with tab_edit_inv:
         st.subheader("Edit Existing Invoice")
@@ -2138,68 +2142,67 @@ elif page == "Terms Management":
         else:
             selected_edit = st.selectbox("Select Term to Edit", terms_list['display'].tolist())
             term_id_edit = terms_list[terms_list['display'] == selected_edit]['id'].iloc[0]
-            term_data = conn.execute("SELECT * FROM terms WHERE id = ?", (term_id_edit,)).fetchone()
-            
-            if term_data is None:
-                st.error("Selected term not found in database.")
-            else:
-                with st.form("edit_term_form"):
-                    term_options = ["Term 1", "Term 2", "Term 3"]
-                    
-                    current_name = (term_data['name'] or "").strip()
-                    try:
-                        default_index = term_options.index(current_name)
-                    except ValueError:
-                        default_index = 0
-                        st.warning(
-                            f"Stored term name '{current_name}' is not one of the standard options "
-                            f"({', '.join(term_options)}). Defaulting to 'Term 1' for editing."
-                        )
-                    
-                    edit_name = st.selectbox("Term Name", term_options, index=default_index)
-                    edit_year = st.text_input("Academic Year", value=term_data['academic_year'] or "")
-                    edit_start = st.date_input(
-                        "Start Date", 
-                        value=date.fromisoformat(term_data['start_date']) if term_data['start_date'] else date.today()
-                    )
-                    edit_end = st.date_input(
-                        "End Date", 
-                        value=date.fromisoformat(term_data['end_date']) if term_data['end_date'] else date.today()
-                    )
-                    edit_current = st.checkbox("Mark as Current Term", value=bool(term_data['is_current']))
-                    submit_edit_term = st.form_submit_button("Save Changes")
-
-                if submit_edit_term:
-                    if edit_start >= edit_end:
-                        st.error("End date must be after start date")
+            term_data = conn.execute("SELECT * FROM terms WHERE id = ?", (term_id_edit,)).fetch
+        if term_data is None:
+                        st.error("Selected term not found in database.")
                     else:
-                        try:
-                            cur = conn.cursor()
-                            cur.execute("""
-                                UPDATE terms 
-                                SET name = ?, academic_year = ?, start_date = ?, end_date = ?, is_current = ?
-                                WHERE id = ?
-                            """, (
-                                edit_name.strip(), 
-                                edit_year.strip(), 
-                                edit_start.isoformat(), 
-                                edit_end.isoformat(), 
-                                1 if edit_current else 0, 
-                                term_id_edit
-                            ))
+                        with st.form("edit_term_form"):
+                            term_options = ["Term 1", "Term 2", "Term 3"]
                             
-                            if edit_current:
-                                cur.execute("UPDATE terms SET is_current = 0 WHERE id != ?", (term_id_edit,))
+                            current_name = (term_data['name'] or "").strip()
+                            try:
+                                default_index = term_options.index(current_name)
+                            except ValueError:
+                                default_index = 0
+                                st.warning(
+                                    f"Stored term name '{current_name}' is not one of the standard options "
+                                    f"({', '.join(term_options)}). Defaulting to 'Term 1' for editing."
+                                )
                             
-                            conn.commit()
-                            st.success("Term updated successfully")
-                            if edit_current:
-                                st.session_state['term_id'] = term_id_edit
-                            log_action("edit_term", f"Edited term ID {term_id_edit} to {edit_name} {edit_year}", 
-                                       st.session_state.user['username'])
-                            safe_rerun()
-                        except Exception as e:
-                            st.error(f"Error updating term: {str(e)}")
+                            edit_name = st.selectbox("Term Name", term_options, index=default_index)
+                            edit_year = st.text_input("Academic Year", value=term_data['academic_year'] or "")
+                            edit_start = st.date_input(
+                                "Start Date", 
+                                value=date.fromisoformat(term_data['start_date']) if term_data['start_date'] else date.today()
+                            )
+                            edit_end = st.date_input(
+                                "End Date", 
+                                value=date.fromisoformat(term_data['end_date']) if term_data['end_date'] else date.today()
+                            )
+                            edit_current = st.checkbox("Mark as Current Term", value=bool(term_data['is_current']))
+                            submit_edit_term = st.form_submit_button("Save Changes")
+
+                        if submit_edit_term:
+                            if edit_start >= edit_end:
+                                st.error("End date must be after start date")
+                            else:
+                                try:
+                                    cur = conn.cursor()
+                                    cur.execute("""
+                                        UPDATE terms 
+                                        SET name = ?, academic_year = ?, start_date = ?, end_date = ?, is_current = ?
+                                        WHERE id = ?
+                                    """, (
+                                        edit_name.strip(), 
+                                        edit_year.strip(), 
+                                        edit_start.isoformat(), 
+                                        edit_end.isoformat(), 
+                                        1 if edit_current else 0, 
+                                        term_id_edit
+                                    ))
+                                    
+                                    if edit_current:
+                                        cur.execute("UPDATE terms SET is_current = 0 WHERE id != ?", (term_id_edit,))
+                                    
+                                    conn.commit()
+                                    st.success("Term updated successfully")
+                                    if edit_current:
+                                        st.session_state['term_id'] = term_id_edit
+                                    log_action("edit_term", f"Edited term ID {term_id_edit} to {edit_name} {edit_year}", 
+                                               st.session_state.user['username'])
+                                    safe_rerun()
+                                except Exception as e:
+                                    st.error(f"Error updating term: {str(e)}")
 
     conn.close()
 
@@ -2209,4 +2212,3 @@ elif page == "Terms Management":
 st.markdown("---")
 st.caption(f"© COSNA School Management System • {datetime.now().year} • Final Fixed Version")
 st.caption("Developed for Cosna Daycare, Nursery, Day and Boarding Primary School Kiyinda-Mityana")
-            
