@@ -2164,44 +2164,44 @@ elif page == "Terms Management":
                 "Start Date", 
                 value=date.fromisoformat(term_data['start_date']) if term_data['start_date'] else date.today()
                 )
-                edit_end = st.date_input(
-                    "End Date", 
-                    value=date.fromisoformat(term_data['end_date']) if term_data['end_date'] else date.today()
+            edit_end = st.date_input(
+                "End Date", 
+                value=date.fromisoformat(term_data['end_date']) if term_data['end_date'] else date.today()
                 )
-                edit_current = st.checkbox("Mark as Current Term", value=bool(term_data['is_current']))
-                submit_edit_term = st.form_submit_button("Save Changes")
+            edit_current = st.checkbox("Mark as Current Term", value=bool(term_data['is_current']))
+            submit_edit_term = st.form_submit_button("Save Changes")
             
-            if submit_edit_term:
-                if edit_start >= edit_end:
-                    st.error("End date must be after start date")
-                else:
-                    try:
-                        cur = conn.cursor()
-                        cur.execute("""
-                        UPDATE terms 
-                        SET name = ?, academic_year = ?, start_date = ?, end_date = ?, is_current = ?
-                        WHERE id = ?
-                        """, (
-                        edit_name.strip(), 
-                        edit_year.strip(), 
-                        edit_start.isoformat(), 
-                        edit_end.isoformat(), 
-                        1 if edit_current else 0, 
-                        term_id_edit
-                        ))
+        if submit_edit_term:
+            if edit_start >= edit_end:
+                st.error("End date must be after start date")
+            else:
+                try:
+                    cur = conn.cursor()
+                    cur.execute("""
+                    UPDATE terms 
+                    SET name = ?, academic_year = ?, start_date = ?, end_date = ?, is_current = ?
+                    WHERE id = ?
+                    """, (
+                    edit_name.strip(), 
+                    edit_year.strip(), 
+                    edit_start.isoformat(), 
+                    edit_end.isoformat(), 
+                    1 if edit_current else 0, 
+                    term_id_edit
+                    ))
                                     
-                        if edit_current:
-                            cur.execute("UPDATE terms SET is_current = 0 WHERE id != ?", (term_id_edit,))
+                    if edit_current:
+                        cur.execute("UPDATE terms SET is_current = 0 WHERE id != ?", (term_id_edit,))
                                     
-                        conn.commit()
-                        st.success("Term updated successfully")
-                        if edit_current:
-                            st.session_state['term_id'] = term_id_edit
-                        log_action("edit_term", f"Edited term ID {term_id_edit} to {edit_name} {edit_year}", 
-                                    st.session_state.user['username'])
-                        safe_rerun()
-                    except Exception as e:
-                        st.error(f"Error updating term: {str(e)}")
+                    conn.commit()
+                    st.success("Term updated successfully")
+                    if edit_current:
+                        st.session_state['term_id'] = term_id_edit
+                    log_action("edit_term", f"Edited term ID {term_id_edit} to {edit_name} {edit_year}", 
+                                st.session_state.user['username'])
+                    safe_rerun()
+                except Exception as e:
+                    st.error(f"Error updating term: {str(e)}")
 
     conn.close()
 
