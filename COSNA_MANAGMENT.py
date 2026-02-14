@@ -2151,9 +2151,9 @@ elif page == "Terms Management":
                 current_name = (term_data['name'] or "").strip()
             try:
                 default_index = term_options.index(current_name)
-                except ValueError:
-                    default_index = 0
-                    st.warning(
+            except ValueError:
+                default_index = 0
+                st.warning(
                     f"Stored term name '{current_name}' is not one of the standard options "
                     f"({', '.join(term_options)}). Defaulting to 'Term 1' for editing."
                         )
