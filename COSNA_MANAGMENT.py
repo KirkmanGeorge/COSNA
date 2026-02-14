@@ -11,6 +11,7 @@ Final improved single-file application with:
 - Cashbook (combined incomes/expenses running balance) view, updated to two-column cash book with cash and bank
 - Robust DB initialization and safe migrations
 - Editing and deleting capabilities for saved information (students, classes, uniforms, finances, etc.)
+- Term-based data management for finances, reports, fee management, cashbook (students/classes/uniforms cross terms)
 Notes:
 - Save the school badge image as "school_badge.png" in the app folder or upload it on the login page.
 - This file is intended to replace the previous script. Back up your DB before running.
@@ -38,6 +39,9 @@ REGISTRATION_FEE = 50000.0
 SIMILARITY_THRESHOLD = 0.82
 LOGO_FILENAME = "school_badge.png" # place uploaded badge here
 PAGE_LAYOUT = "wide"
+SCHOOL_NAME = "Cosna Daycare, Nursery, Day and Boarding Primary School Kiyinda-Mityana"
+SCHOOL_EMAIL = "info@cosnaschool.com Or: admin@cosnaschool.com"
+SCHOOL_ADDRESS = "P.O.Box 000, kiyinda mityana,"
 st.set_page_config(page_title=APP_TITLE, layout=PAGE_LAYOUT, initial_sidebar_state="expanded")
 st.title(APP_TITLE)
 st.markdown("Students • Uniforms • Finances • Reports")
@@ -407,7 +411,7 @@ def df_to_excel_bytes(df: pd.DataFrame, sheet_name="Sheet1"):
         df.to_excel(writer, sheet_name=sheet_name, index=False)
     buf.seek(0)
     return buf
-def draw_wrapped_text(c, text, x, y, width, font='Times-Roman', size=8):
+def draw_wrapped_text(c, text, x, y, width, font='Helvetica', size=8):
     c.setFont(font, size)
     lines = []
     line = []
@@ -442,10 +446,14 @@ def dataframe_to_pdf_bytes_landscape(df: pd.DataFrame, title="Report", logo_path
             title_x = 40 + draw_w + 10
         except Exception:
             title_x = 40
-    c.setFont("Times-Bold", 14)
-    c.drawString(title_x, y_top, title)
-    c.setFont("Times-Roman", 8)
-    y = y_top - draw_h - 30
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(title_x, y_top, SCHOOL_NAME)
+    c.setFont("Helvetica", 10)
+    c.drawString(title_x, y_top - 15, SCHOOL_EMAIL)
+    c.drawString(title_x, y_top - 30, SCHOOL_ADDRESS)
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(title_x, y_top - 50, title)
+    y = y_top - draw_h - 70
     cols = list(df.columns)
     usable_width = width - 80
     col_width = usable_width / max(1, len(cols))
@@ -472,7 +480,7 @@ def dataframe_to_pdf_bytes_landscape(df: pd.DataFrame, title="Report", logo_path
             y = min(y, temp_y - 12) # adjust for next row
         y -= 12 # extra row spacing if needed
     # Footer
-    c.setFont("Times-Roman", 7)
+    c.setFont("Helvetica", 7)
     c.drawString(40, 20, f"Generated: {datetime.now().isoformat()} • {APP_TITLE}")
     c.showPage()
     c.save()
@@ -497,6 +505,21 @@ def require_role(allowed_roles):
     if user.get('role') not in allowed_roles:
         st.error("You do not have permission to access this section")
         st.stop()
+# ---------------------------
+# Term management helpers
+# ---------------------------
+def get_current_term_id():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM terms WHERE is_current = 1")
+    row = cur.fetchone()
+    conn.close()
+    return row['id'] if row else None
+def get_all_terms():
+    conn = get_db_connection()
+    df = pd.read_sql("SELECT id, name FROM terms ORDER BY start_date DESC", conn)
+    conn.close()
+    return df
 # ---------------------------
 # Login page (isolated)
 # ---------------------------
@@ -559,7 +582,7 @@ with st.sidebar:
 # ---------------------------
 # Main navigation
 # ---------------------------
-page = st.sidebar.radio("Menu", ["Dashboard", "Students", "Uniforms", "Finances", "Financial Report", "Fee Management", "Cashbook", "Audit Log"])
+page = st.sidebar.radio("Menu", ["Dashboard", "Students", "Uniforms", "Finances", "Financial Report", "Fee Management", "Cashbook", "Audit Log", "Terms Management"])
 # ---------------------------
 # Dashboard
 # ---------------------------
@@ -692,7 +715,7 @@ elif page == "Students":
                             log_action("add_class", f"Created class: {new_class_name}", st.session_state.user['username'])
                             safe_rerun()
                     except sqlite3.IntegrityError:
-                        st.error("Class name already exists (case-sensitive conflict)")
+                        st.error("Class name already exists (case-sensitive conflict")
                     except Exception as e:
                         st.error(f"Error creating class: {str(e)}")
         with st.form("add_student_form"):
@@ -830,18 +853,18 @@ elif page == "Students":
         conn = get_db_connection()
         st.subheader("Outstanding Fees Breakdown")
         total_outstanding = conn.execute(
-            "SELECT COALESCE(SUM(balance_amount), 0) FROM invoices WHERE status IN ('Pending', 'Partially Paid')"
+            f"SELECT COALESCE(SUM(balance_amount), 0) FROM invoices WHERE status IN ('Pending', 'Partially Paid') {term_filter}", params
         ).fetchone()[0]
         st.metric("Total Outstanding Fees", f"USh {total_outstanding:,.0f}")
-        class_df = pd.read_sql("""
+        class_df = pd.read_sql(f"""
             SELECT c.name as 'Class Name', COALESCE(SUM(i.balance_amount), 0) as 'Class Outstanding'
             FROM invoices i
             JOIN students s ON i.student_id = s.id
             JOIN classes c ON s.class_id = c.id
-            WHERE i.status IN ('Pending', 'Partially Paid')
+            WHERE i.status IN ('Pending', 'Partially Paid') {term_filter}
             GROUP BY c.name
             ORDER BY 'Class Outstanding' DESC
-        """, conn)
+        """, conn, params=params)
         if class_df.empty:
             st.info("No outstanding fees at the moment.")
         else:
@@ -853,15 +876,13 @@ elif page == "Students":
                 format_func=lambda x: "— Select a class —" if x == "" else x
             )
             if selected_class:
-                student_df = pd.read_sql("""
+                student_df = pd.read_sql(f"""
                     SELECT s.name as Name, COALESCE(SUM(i.balance_amount), 0) as Outstanding
                     FROM invoices i
                     JOIN students s ON i.student_id = s.id
                     JOIN classes c ON s.class_id = c.id
-                    WHERE c.name = ? AND i.status IN ('Pending', 'Partially Paid')
-                    GROUP BY s.id, s.name
-                    ORDER BY Outstanding DESC
-                """, conn, params=(selected_class,))
+                    WHERE c.name = ? AND i.status IN ('Pending', 'Partially Paid') {term_filter}
+                """, conn, params=(selected_class,) + params)
                 if student_df.empty:
                     st.info(f"No students with outstanding balances in {selected_class}")
                 else:
@@ -881,7 +902,7 @@ elif page == "Students":
             student_name = selected.split(" - ")[0]
             student_id = int(selected.split("(ID: ")[1].replace(")", ""))
             try:
-                invoices = pd.read_sql("SELECT * FROM invoices WHERE student_id = ? ORDER BY issue_date DESC", conn, params=(student_id,))
+                invoices = pd.read_sql(f"SELECT * FROM invoices WHERE student_id = ? {term_filter} ORDER BY issue_date DESC", conn, params=(student_id,) + params)
             except Exception:
                 invoices = pd.DataFrame()
             if invoices.empty:
@@ -900,7 +921,7 @@ elif page == "Students":
                 st.dataframe(display_invoices, use_container_width=True)
                 st.subheader("Payment History")
                 try:
-                    payments = pd.read_sql("SELECT p.id, p.payment_date, p.amount, p.payment_method, p.receipt_number, p.reference_number, p.notes FROM payments p JOIN invoices i ON p.invoice_id = i.id WHERE i.student_id = ? ORDER BY p.payment_date DESC", conn, params=(student_id,))
+                    payments = pd.read_sql(f"SELECT p.id, p.payment_date, p.amount, p.payment_method, p.receipt_number, p.reference_number, p.notes FROM payments p JOIN invoices i ON p.invoice_id = i.id WHERE i.student_id = ? {term_filter} ORDER BY p.payment_date DESC", conn, params=(student_id,) + params)
                     if payments.empty:
                         st.info("No payments recorded for this student")
                     else:
@@ -1283,16 +1304,18 @@ elif page == "Finances":
     with tab_reports:
         st.subheader("Transactions")
         conn = get_db_connection()
-        df_inc = pd.read_sql("""
+        df_inc = pd.read_sql(f"""
             SELECT i.date as Date, i.receipt_number as 'Receipt No', i.amount as Amount, i.source as Source, ec.name as Category, i.description as Description, i.payment_method as 'Payment Method', i.payer as Payer, i.received_by as 'Received By', i.created_by as 'Created By'
             FROM incomes i LEFT JOIN expense_categories ec ON i.category_id = ec.id
+            WHERE 1=1 {term_filter}
             ORDER BY i.date DESC LIMIT 500
-        """, conn)
-        df_exp = pd.read_sql("""
+        """, conn, params=params)
+        df_exp = pd.read_sql(f"""
             SELECT e.date as Date, e.voucher_number as 'Voucher No', e.amount as Amount, ec.name as Category, e.description as Description, e.payment_method as 'Payment Method', e.payee as Payee, e.approved_by as 'Approved By', e.created_by as 'Created By'
             FROM expenses e LEFT JOIN expense_categories ec ON e.category_id = ec.id
+            WHERE 1=1 {term_filter}
             ORDER BY e.date DESC LIMIT 500
-        """, conn)
+        """, conn, params=params)
         st.write("Recent Incomes")
         if df_inc.empty:
             st.info("No incomes recorded")
@@ -1312,7 +1335,7 @@ elif page == "Finances":
             st.info("Permission denied")
         else:
             conn = get_db_connection()
-            incomes = pd.read_sql("SELECT id, receipt_number, date, amount, source, category_id, description, payment_method, payer FROM incomes ORDER BY date DESC", conn)
+            incomes = pd.read_sql(f"SELECT id, receipt_number, date, amount, source, category_id, description, payment_method, payer FROM incomes WHERE 1=1 {term_filter} ORDER BY date DESC", conn, params=params)
             if incomes.empty:
                 st.info("No incomes to edit")
             else:
@@ -1361,7 +1384,7 @@ elif page == "Finances":
         st.subheader("Delete Income")
         st.warning("Deleting an income record is permanent. Proceed with caution.")
         conn = get_db_connection()
-        incomes = pd.read_sql("SELECT id, receipt_number FROM incomes ORDER BY date DESC", conn)
+        incomes = pd.read_sql(f"SELECT id, receipt_number FROM incomes WHERE 1=1 {term_filter} ORDER BY date DESC", conn, params=params)
         if incomes.empty:
             st.info("No incomes to delete")
         else:
@@ -1385,7 +1408,7 @@ elif page == "Finances":
             st.info("Permission denied")
         else:
             conn = get_db_connection()
-            expenses = pd.read_sql("SELECT id, voucher_number, date, amount, category_id, description, payment_method, payee, approved_by FROM expenses ORDER BY date DESC", conn)
+            expenses = pd.read_sql(f"SELECT id, voucher_number, date, amount, category_id, description, payment_method, payee, approved_by FROM expenses WHERE 1=1 {term_filter} ORDER BY date DESC", conn, params=params)
             if expenses.empty:
                 st.info("No expenses to edit")
             else:
@@ -1434,7 +1457,7 @@ elif page == "Finances":
         st.subheader("Delete Expense")
         st.warning("Deleting an expense record is permanent. Proceed with caution.")
         conn = get_db_connection()
-        expenses = pd.read_sql("SELECT id, voucher_number FROM expenses ORDER BY date DESC", conn)
+        expenses = pd.read_sql(f"SELECT id, voucher_number FROM expenses WHERE 1=1 {term_filter} ORDER BY date DESC", conn, params=params)
         if expenses.empty:
             st.info("No expenses to delete")
         else:
@@ -1515,8 +1538,8 @@ elif page == "Financial Report":
         if st.button("Generate Report"):
             try:
                 if report_type == "Income vs Expense (date range)":
-                    df_inc = pd.read_sql("SELECT date as Date, receipt_number as 'Receipt No', amount as Amount, source as Source, payment_method as 'Payment Method', payer as Payer, description as Description FROM incomes WHERE date BETWEEN ? AND ? ORDER BY date", conn, params=(start_date.isoformat(), end_date.isoformat()))
-                    df_exp = pd.read_sql("SELECT date as Date, voucher_number as 'Voucher No', amount as Amount, description as Description, payment_method as 'Payment Method', payee as Payee FROM expenses WHERE date BETWEEN ? AND ? ORDER BY date", conn, params=(start_date.isoformat(), end_date.isoformat()))
+                    df_inc = pd.read_sql(f"SELECT date as Date, receipt_number as 'Receipt No', amount as Amount, source as Source, payment_method as 'Payment Method', payer as Payer, description as Description FROM incomes WHERE date BETWEEN ? AND ? {term_filter} ORDER BY date", conn, params=(start_date.isoformat(), end_date.isoformat()) + params)
+                    df_exp = pd.read_sql(f"SELECT date as Date, voucher_number as 'Voucher No', amount as Amount, description as Description, payment_method as 'Payment Method', payee as Payee FROM expenses WHERE date BETWEEN ? AND ? {term_filter} ORDER BY date", conn, params=(start_date.isoformat(), end_date.isoformat()) + params)
                     if df_inc.empty and df_exp.empty:
                         st.info("No transactions in this range")
                     else:
@@ -1532,21 +1555,21 @@ elif page == "Financial Report":
                         download_options(combined, filename_base=f"financial_{start_date}_{end_date}", title="Income vs Expense Report")
                 elif report_type == "By Category":
                     cat = st.selectbox("Category Type", ["Income", "Expense"])
-                    df = pd.read_sql("""
+                    df = pd.read_sql(f"""
                         SELECT ec.name as Category, SUM(COALESCE(i.amount,0)) as 'Total Income', SUM(COALESCE(e.amount,0)) as 'Total Expense'
                         FROM expense_categories ec
                         LEFT JOIN incomes i ON i.category_id = ec.id
                         LEFT JOIN expenses e ON e.category_id = ec.id
-                        WHERE ec.category_type = ?
+                        WHERE ec.category_type = ? {term_filter.replace('?', '')}
                         GROUP BY ec.name
-                    """, conn, params=(cat,))
+                    """, conn, params=(cat, ) + params * 2)
                     if df.empty:
                         st.info("No data for selected category type")
                     else:
                         st.dataframe(df, use_container_width=True)
                         download_options(df, filename_base=f"by_category_{cat}", title=f"By Category - {cat}")
                 elif report_type == "Outstanding Invoices":
-                    df = pd.read_sql("SELECT invoice_number as 'Invoice No', student_id as 'Student ID', issue_date as 'Issue Date', due_date as 'Due Date', total_amount as 'Total Amount', paid_amount as 'Paid Amount', balance_amount as 'Balance Amount', status as Status, notes as Notes FROM invoices WHERE status IN ('Pending','Partially Paid') ORDER BY due_date", conn)
+                    df = pd.read_sql(f"SELECT invoice_number as 'Invoice No', student_id as 'Student ID', issue_date as 'Issue Date', due_date as 'Due Date', total_amount as 'Total Amount', paid_amount as 'Paid Amount', balance_amount as 'Balance Amount', status as Status, notes as Notes FROM invoices WHERE status IN ('Pending','Partially Paid') {term_filter} ORDER BY due_date", conn, params=params)
                     if df.empty:
                         st.info("No outstanding invoices")
                     else:
@@ -1559,8 +1582,8 @@ elif page == "Financial Report":
                     else:
                         sel = st.selectbox("Select Student", students.apply(lambda x: f"{x['name']} (ID: {x['id']})", axis=1))
                         sid = int(sel.split("(ID: ")[1].replace(")", ""))
-                        df_inv = pd.read_sql("SELECT invoice_number as 'Invoice No', academic_year as 'Academic Year', term as Term, total_amount as 'Total Amount', paid_amount as 'Paid Amount', balance_amount as 'Balance Amount', status as Status, issue_date as 'Issue Date', notes as Notes FROM invoices WHERE student_id = ? ORDER BY issue_date DESC", conn, params=(sid,))
-                        df_pay = pd.read_sql("SELECT payment_date as 'Payment Date', amount as Amount, payment_method as 'Payment Method', receipt_number as 'Receipt No', reference_number as 'Reference No', notes as Notes FROM payments p JOIN invoices i ON p.invoice_id = i.id WHERE i.student_id = ? ORDER BY payment_date DESC", conn, params=(sid,))
+                        df_inv = pd.read_sql(f"SELECT invoice_number as 'Invoice No', academic_year as 'Academic Year', term as Term, total_amount as 'Total Amount', paid_amount as 'Paid Amount', balance_amount as 'Balance Amount', status as Status, issue_date as 'Issue Date', notes as Notes FROM invoices WHERE student_id = ? {term_filter} ORDER BY issue_date DESC", conn, params=(sid,) + params)
+                        df_pay = pd.read_sql(f"SELECT payment_date as 'Payment Date', amount as Amount, payment_method as 'Payment Method', receipt_number as 'Receipt No', reference_number as 'Reference No', notes as Notes FROM payments p JOIN invoices i ON p.invoice_id = i.id WHERE i.student_id = ? {term_filter} ORDER BY payment_date DESC", conn, params=(sid,) + params)
                         st.subheader("Invoices")
                         if df_inv.empty:
                             st.info("No invoices for this student")
@@ -1590,14 +1613,14 @@ elif page == "Cashbook":
     else:
         try:
             # Fetch incomes and expenses with payment_method
-            df_inc = pd.read_sql("""
+            df_inc = pd.read_sql(f"""
                 SELECT date as tx_date, source || ' from ' || payer as description, amount, payment_method, 'Income' as type
-                FROM incomes WHERE date BETWEEN ? AND ?
-            """, conn, params=(start_date.isoformat(), end_date.isoformat()))
-            df_exp = pd.read_sql("""
+                FROM incomes WHERE date BETWEEN ? AND ? {term_filter}
+            """, conn, params=(start_date.isoformat(), end_date.isoformat()) + params)
+            df_exp = pd.read_sql(f"""
                 SELECT date as tx_date, description || ' to ' || payee as description, amount, payment_method, 'Expense' as type
-                FROM expenses WHERE date BETWEEN ? AND ?
-            """, conn, params=(start_date.isoformat(), end_date.isoformat()))
+                FROM expenses WHERE date BETWEEN ? AND ? {term_filter}
+            """, conn, params=(start_date.isoformat(), end_date.isoformat()) + params)
             combined = pd.concat([df_inc, df_exp], ignore_index=True)
             if combined.empty:
                 st.info("No transactions in this range")
