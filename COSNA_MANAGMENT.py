@@ -1846,7 +1846,7 @@ elif page == "Fee Management":
                                     INSERT INTO invoices (invoice_number, student_id, issue_date, due_date, academic_year, term, total_amount, paid_amount, balance_amount, status, notes, created_by, term_id)
                                     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'Pending', ?, ?, ?)
                                 """, (inv_no, student_id, issue_date.isoformat(), due_date.isoformat(), fee_row['academic_year'], fee_row['term'], total_amount, total_amount, notes, st.session_state.user['username'], term_id))
-                                                                conn.commit()
+                                conn.commit()
                                 st.success(f"Invoice {inv_no} created for USh {total_amount:,.0f}")
                                 log_action("create_invoice", f"Invoice {inv_no} for student {student_id} amount {total_amount}", st.session_state.user['username'])
                                 safe_rerun()
