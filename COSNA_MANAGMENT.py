@@ -129,7 +129,7 @@ def safe_alter_add_column(conn, table, column_def):
 def initialize_database():
     conn = get_db_connection()
     cursor = conn.cursor()
-    # Core tables (unchanged)
+    # Core tables
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -280,7 +280,7 @@ def initialize_database():
         )
     ''')
     conn.commit()
-    # Safe migrations (unchanged)
+    # Safe migrations
     safe_alter_add_column(conn, "incomes", "created_by TEXT")
     safe_alter_add_column(conn, "incomes", "received_by TEXT")
     safe_alter_add_column(conn, "incomes", "description TEXT")
@@ -293,14 +293,14 @@ def initialize_database():
     safe_alter_add_column(conn, "uniform_categories", "normalized_category TEXT")
     safe_alter_add_column(conn, "invoices", "created_by TEXT")
     safe_alter_add_column(conn, "payments", "created_by TEXT")
-    # Backfill normalized fields (unchanged)
+    # Backfill normalized fields
     try:
         rows = conn.execute("SELECT id, category, normalized_category FROM uniform_categories").fetchall()
         for r in rows:
             if (r["normalized_category"] is None or r["normalized_category"] == "") and r["category"]:
                 conn.execute("UPDATE uniform_categories SET normalized_category = ? WHERE id = ?", (normalize_text(r["category"]), r["id"]))
         conn.commit()
-    except Exception:
+    except:
         pass
     try:
         rows = conn.execute("SELECT id, name, normalized_name FROM students").fetchall()
@@ -308,9 +308,9 @@ def initialize_database():
             if (r["normalized_name"] is None or r["normalized_name"] == "") and r["name"]:
                 conn.execute("UPDATE students SET normalized_name = ? WHERE id = ?", (normalize_text(r["name"]), r["id"]))
         conn.commit()
-    except Exception:
+    except:
         pass
-    # Ensure uniforms rows (unchanged)
+    # Ensure uniforms rows
     try:
         rows = conn.execute("SELECT id FROM uniform_categories").fetchall()
         for r in rows:
@@ -319,20 +319,19 @@ def initialize_database():
             if not u:
                 conn.execute("INSERT INTO uniforms (category_id, stock, unit_price) VALUES (?, 0, 0.0)", (cat_id,))
         conn.commit()
-    except Exception:
+    except:
         pass
-    # Seed default admin (unchanged)
+    # Seed default admin
     try:
-        cur = conn.execute("SELECT COUNT(*) as cnt FROM users")
-        if cur.fetchone()["cnt"] == 0:
+        if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
             default_user = "admin"
             default_pass = "costa2026"
             conn.execute("INSERT OR IGNORE INTO users (username, password_hash, role, full_name) VALUES (?, ?, ?, ?)",
                          (default_user, hash_password(default_pass), "Admin", "Administrator"))
             conn.commit()
-    except Exception:
+    except:
         pass
-    # Seed uniforms (unchanged)
+    # Seed uniforms
     uniform_seeds = [
         ('Boys Main Shorts', 'boys', 0),
         ('Button Shirts Main', 'shared', 1),
@@ -349,18 +348,18 @@ def initialize_database():
                 conn.execute("INSERT INTO uniform_categories (category, normalized_category, gender, is_shared) VALUES (?, ?, ?, ?)",
                              (name, nname, gender, shared))
                 conn.commit()
-                cat_id = conn.execute("SELECT last_insert_rowid() as id").fetchone()["id"]
+                cat_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                 conn.execute("INSERT OR IGNORE INTO uniforms (category_id, stock, unit_price) VALUES (?, 0, 0.0)", (cat_id,))
                 conn.commit()
             else:
-                cat_id = row["id"]
+                cat_id = row[0]
                 u = conn.execute("SELECT id FROM uniforms WHERE category_id = ?", (cat_id,)).fetchone()
                 if not u:
                     conn.execute("INSERT INTO uniforms (category_id, stock, unit_price) VALUES (?, 0, 0.0)", (cat_id,))
                     conn.commit()
-    except Exception:
+    except:
         pass
-    # Seed expense categories (add Transfer In/Out)
+    # Seed expense categories
     expense_seeds = [
         ('Medical', 'Expense'), ('Salaries', 'Expense'), ('Utilities', 'Expense'),
         ('Maintenance', 'Expense'), ('Supplies', 'Expense'), ('Transport', 'Expense'),
@@ -373,10 +372,9 @@ def initialize_database():
             if not conn.execute("SELECT id FROM expense_categories WHERE name = ?", (cat,)).fetchone():
                 conn.execute("INSERT INTO expense_categories (name, category_type) VALUES (?, ?)", (cat, cat_type))
                 conn.commit()
-    except Exception:
+    except:
         pass
     conn.close()
-
 initialize_database()
 
 # ---------------------------
@@ -468,15 +466,6 @@ def dataframe_to_pdf_bytes_landscape(df: pd.DataFrame, title="Report", logo_path
             title_x = 40
     c.setFont("Helvetica-Bold", 14)
     c.drawString(title_x, y_top, title)
-    # Add school details
-    y_top -= 20
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(title_x, y_top, SCHOOL_NAME)
-    y_top -= 12
-    c.setFont("Helvetica", 8)
-    c.drawString(title_x, y_top, SCHOOL_ADDRESS)
-    y_top -= 10
-    c.drawString(title_x, y_top, SCHOOL_EMAIL)
     c.setFont("Helvetica", 8)
     y = y_top - draw_h - 30
     cols = list(df.columns)
@@ -563,9 +552,9 @@ def show_login_page():
                     if user and verify_password(user["password_hash"], password):
                         st.session_state.user = {
                             "id": user["id"],
-                            "username": user["username"],
+                            "username": username,
                             "role": user["role"] if user["role"] else "Clerk",
-                            "full_name": user["full_name"] if user["full_name"] else user["username"]
+                            "full_name": user["full_name"] if user["full_name"] else username
                         }
                         log_action("login", f"user {username} logged in", username)
                         safe_rerun()
@@ -595,6 +584,42 @@ with st.sidebar:
         st.session_state.user = None
         safe_rerun()
 
+    st.markdown("---")
+    st.subheader("Dashboard Filter")
+    view_mode = st.radio("View Financials for", ["Current Term", "All Time"], index=0)
+
+# ---------------------------
+# Determine current term/year
+# ---------------------------
+@st.cache_data(ttl=3600)
+def get_current_term_year():
+    conn = get_db_connection()
+    # Try latest from fee_structure
+    row = conn.execute("""
+        SELECT academic_year, term
+        FROM fee_structure
+        ORDER BY created_at DESC LIMIT 1
+    """).fetchone()
+
+    if not row:
+        # fallback to latest invoice
+        row = conn.execute("""
+            SELECT academic_year, term
+            FROM invoices
+            ORDER BY issue_date DESC LIMIT 1
+        """).fetchone()
+
+    conn.close()
+    if row:
+        return row['academic_year'], row['term']
+    return f"{date.today().year}/{date.today().year+1}", "Term 1"  # default if none
+
+# Initialize current term if not set
+if 'current_academic_year' not in st.session_state or 'current_term' not in st.session_state:
+    ay, tm = get_current_term_year()
+    st.session_state.current_academic_year = ay
+    st.session_state.current_term = tm
+
 # ---------------------------
 # Main navigation
 # ---------------------------
@@ -606,24 +631,41 @@ page = st.sidebar.radio("Menu", ["Dashboard", "Students", "Uniforms", "Finances"
 if page == "Dashboard":
     conn = get_db_connection()
     st.header(" Financial Overview")
+
+    if view_mode == "Current Term":
+        ay = st.session_state.current_academic_year
+        tm = st.session_state.current_term
+        st.info(f"Showing data for {tm} {ay}. Change in sidebar for all time.")
+        inc_where = "WHERE academic_year = ? AND term = ?"
+        exp_where = "WHERE academic_year = ? AND term = ?"
+        out_where = "WHERE status IN ('Pending','Partially Paid') AND academic_year = ? AND term = ?"
+        params = (ay, tm)
+    else:
+        st.info("Showing all-time financial overview")
+        inc_where = ""
+        exp_where = ""
+        out_where = "WHERE status IN ('Pending','Partially Paid')"
+        params = ()
+
     col1, col2, col3, col4 = st.columns(4)
     try:
-        total_income = conn.execute("SELECT COALESCE(SUM(amount),0) as s FROM incomes").fetchone()["s"] or 0
+        total_income = conn.execute(f"SELECT COALESCE(SUM(amount),0) as s FROM incomes {inc_where}", params).fetchone()["s"] or 0
     except Exception:
         total_income = 0
     col1.metric("Total Income", f"USh {total_income:,.0f}")
     try:
-        total_expenses = conn.execute("SELECT COALESCE(SUM(amount),0) as s FROM expenses").fetchone()["s"] or 0
+        total_expenses = conn.execute(f"SELECT COALESCE(SUM(amount),0) as s FROM expenses {exp_where}", params).fetchone()["s"] or 0
     except Exception:
         total_expenses = 0
     col2.metric("Total Expenses", f"USh {total_expenses:,.0f}")
     net_balance = total_income - total_expenses
     col3.metric("Net Balance", f"USh {net_balance:,.0f}", delta=f"USh {net_balance:,.0f}")
     try:
-        outstanding_fees = conn.execute("SELECT COALESCE(SUM(balance_amount),0) as s FROM invoices WHERE status IN ('Pending','Partially Paid')").fetchone()["s"] or 0
+        outstanding_fees = conn.execute(f"SELECT COALESCE(SUM(balance_amount),0) as s FROM invoices {out_where}", params).fetchone()["s"] or 0
     except Exception:
         outstanding_fees = 0
     col4.metric("Outstanding Fees", f"USh {outstanding_fees:,.0f}")
+
     colA, colB = st.columns(2)
     with colA:
         st.subheader("Recent Income (Last 5)")
@@ -812,9 +854,9 @@ elif page == "Students":
                 with col2:
                     cls_df = pd.read_sql("SELECT id, name FROM classes ORDER BY name", conn)
                     cls_options = cls_df["name"].tolist() if not cls_df.empty else []
-                    current_cls_name = conn.execute("SELECT name FROM classes WHERE id = ?", (student_row['class_id'],)).fetchone()[0]
+                    current_cls_name = conn.execute("SELECT name FROM classes WHERE id = ?", (student_row['class_id'],)).fetchone()[0] if student_row['class_id'] else "-- No class --"
                     cls_name = st.selectbox("Class", cls_options, index=cls_options.index(current_cls_name) if current_cls_name in cls_options else 0)
-                    cls_id = int(cls_df[cls_df["name"] == cls_name]["id"].iloc[0])
+                    cls_id = int(cls_df[cls_df["name"] == cls_name]["id"].iloc[0]) if cls_name in cls_options else None
                     student_type = st.radio("Student Type", ["New", "Returning"], index=0 if student_row['student_type'] == "New" else 1)
                 submitted = st.form_submit_button("Update Student")
             if submitted:
@@ -1622,7 +1664,7 @@ elif page == "Financial Report":
     conn.close()
 
 # ---------------------------
-# Cashbook - Updated to two-column
+# Cashbook
 # ---------------------------
 elif page == "Cashbook":
     require_role(["Admin", "Accountant", "Clerk"])
@@ -1634,7 +1676,6 @@ elif page == "Cashbook":
         st.error("Start date must be before end date")
     else:
         try:
-            # Fetch incomes and expenses with payment_method
             df_inc = pd.read_sql("""
                 SELECT date as tx_date, source || ' from ' || payer as description, amount, payment_method, 'Income' as type
                 FROM incomes WHERE date BETWEEN ? AND ?
@@ -1649,7 +1690,6 @@ elif page == "Cashbook":
             else:
                 combined['tx_date'] = pd.to_datetime(combined['tx_date'])
                 combined = combined.sort_values('tx_date').reset_index(drop=True)
-                # Classify to cash or bank
                 combined['cash_dr'] = 0.0
                 combined['cash_cr'] = 0.0
                 combined['bank_dr'] = 0.0
@@ -1661,12 +1701,11 @@ elif page == "Cashbook":
                             combined.at[idx, 'cash_dr'] = row['amount']
                         else:
                             combined.at[idx, 'bank_dr'] = row['amount']
-                    else: # Expense
+                    else:
                         if is_cash:
                             combined.at[idx, 'cash_cr'] = row['amount']
                         else:
                             combined.at[idx, 'bank_cr'] = row['amount']
-                # Running balances
                 combined['cash_balance'] = (combined['cash_dr'] - combined['cash_cr']).cumsum()
                 combined['bank_balance'] = (combined['bank_dr'] - combined['bank_cr']).cumsum()
                 display = combined[['tx_date', 'description', 'cash_dr', 'bank_dr', 'cash_cr', 'bank_cr', 'cash_balance', 'bank_balance']].copy()
@@ -1688,7 +1727,7 @@ elif page == "Cashbook":
     conn.close()
 
 # ---------------------------
-# Audit Log viewer
+# Audit Log
 # ---------------------------
 elif page == "Audit Log":
     require_role(["Admin", "Accountant"])
@@ -1723,7 +1762,7 @@ elif page == "Fee Management":
                 cls_name = st.selectbox("Class", classes["name"].tolist())
                 cls_id = int(classes[classes["name"] == cls_name]["id"].iloc[0])
                 term = st.selectbox("Term", ["Term 1","Term 2","Term 3"])
-                academic_year = st.text_input("Academic Year (e.g., 2025/2026)", value=str(date.today().year) + "/" + str(date.today().year+1))
+                academic_year = st.text_input("Academic Year (e.g., 2025/2026)", value=st.session_state.current_academic_year)
                 tuition_fee = st.number_input("Tuition Fee", min_value=0.0, value=0.0, step=100.0)
                 uniform_fee = st.number_input("Uniform Fee", min_value=0.0, value=0.0, step=100.0)
                 activity_fee = st.number_input("Activity Fee", min_value=0.0, value=0.0, step=100.0)
@@ -1753,6 +1792,8 @@ elif page == "Fee Management":
                         conn.commit()
                         st.success("Fee structure created")
                         log_action("create_fee_structure", f"class {cls_name} term {term} year {academic_year} total {total_fee}", st.session_state.user['username'])
+                        st.session_state.current_academic_year = academic_year
+                        st.session_state.current_term = term
                         safe_rerun()
                 except Exception as e:
                     st.error(f"Error saving fee structure: {e}")
