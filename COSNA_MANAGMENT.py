@@ -358,7 +358,7 @@ def initialize_database():
     try:
         if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
             default_user = "admin"
-            default_pass = "costa2026"
+            default_pass = "costa2027"
             conn.execute("INSERT OR IGNORE INTO users (username, password_hash, role, full_name) VALUES (?, ?, ?, ?)",
                          (default_user, hash_password(default_pass), "Admin", "Administrator"))
             conn.commit()
