@@ -2124,43 +2124,43 @@ elif page == "Fee Management":
             selected = st.selectbox("Select Student", students.apply(lambda x: f"{x['name']} - {x['class_name']} (ID: {x['id']})", axis=1), key="select_student_for_invoice")
             student_id = int(selected.split("(ID: ")[1].replace(")", ""))
             fee_options = pd.read_sql("SELECT fs.id, c.name as class_name, fs.term, fs.academic_year, fs.total_fee FROM fee_structure fs JOIN classes c ON fs.class_id = c.id WHERE fs.class_id = (SELECT class_id FROM students WHERE id = ?) ORDER BY fs.academic_year DESC", conn, params=(student_id,))
-                        if fee_options.empty:
-                            st.info("No fee structure defined for this student's class yet.")
+            if fee_options.empty:
+                st.info("No fee structure defined for this student's class yet.")
+            else:
+                chosen = st.selectbox("Choose Fee Structure", fee_options.apply(lambda x: f"{x['academic_year']} - {x['term']} (USh {x['total_fee']:,.0f})", axis=1), key="select_fee_structure")
+                idx = fee_options.index[fee_options.apply(lambda x: f"{x['academic_year']} - {x['term']} (USh {x['total_fee']:,.0f})", axis=1) == chosen][0]
+                fee_row = fee_options.loc[idx]
+                issue_date = st.date_input("Issue Date", date.today())
+                due_date = st.date_input("Due Date", date.today())
+                notes = st.text_area("Notes")
+                if st.button("Create Invoice"):
+                    try:
+                        cur = conn.cursor()
+                        existing_invoice = cur.execute(
+                            "SELECT id FROM invoices WHERE student_id = ? AND term = ? AND academic_year = ?",
+                            (student_id, fee_row['term'], fee_row['academic_year'])
+                        ).fetchone()
+                        if existing_invoice:
+                            st.error("An invoice already exists for this student, term, and academic year.")
                         else:
-                            chosen = st.selectbox("Choose Fee Structure", fee_options.apply(lambda x: f"{x['academic_year']} - {x['term']} (USh {x['total_fee']:,.0f})", axis=1), key="select_fee_structure")
-                            idx = fee_options.index[fee_options.apply(lambda x: f"{x['academic_year']} - {x['term']} (USh {x['total_fee']:,.0f})", axis=1) == chosen][0]
-                            fee_row = fee_options.loc[idx]
-                            issue_date = st.date_input("Issue Date", date.today())
-                            due_date = st.date_input("Due Date", date.today())
-                            notes = st.text_area("Notes")
-                            if st.button("Create Invoice"):
-                                try:
-                                    cur = conn.cursor()
-                                    existing_invoice = cur.execute(
-                                        "SELECT id FROM invoices WHERE student_id = ? AND term = ? AND academic_year = ?",
-                                        (student_id, fee_row['term'], fee_row['academic_year'])
-                                    ).fetchone()
-                                    if existing_invoice:
-                                        st.error("An invoice already exists for this student, term, and academic year.")
-                                    else:
-                                        inv_no = generate_invoice_number()
-                                        total_amount = float(fee_row['total_fee'])
-                                        cur.execute("""
-                                            INSERT INTO invoices (
-                                                invoice_number, student_id, issue_date, due_date, academic_year, term,
-                                                total_amount, paid_amount, balance_amount, status, notes, created_by
-                                            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'Pending', ?, ?)
-                                        """, (
-                                            inv_no, student_id, issue_date.isoformat(), due_date.isoformat(),
-                                            fee_row['academic_year'], fee_row['term'], total_amount, total_amount,
-                                            notes, st.session_state.user['username']
-                                        ))
-                                        conn.commit()
-                                        st.success(f"Invoice {inv_no} created successfully for USh {total_amount:,.0f}")
-                                        log_action("create_invoice", f"Created {inv_no} for student {student_id} - {total_amount}", st.session_state.user['username'])
-                                        safe_rerun()
-                                except Exception as e:
-                                    st.error(f"Error creating invoice: {str(e)}")
+                            inv_no = generate_invoice_number()
+                            total_amount = float(fee_row['total_fee'])
+                            cur.execute("""
+                                INSERT INTO invoices (
+                                    invoice_number, student_id, issue_date, due_date, academic_year, term,
+                                    total_amount, paid_amount, balance_amount, status, notes, created_by
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'Pending', ?, ?)
+                            """, (
+                                inv_no, student_id, issue_date.isoformat(), due_date.isoformat(),
+                                fee_row['academic_year'], fee_row['term'], total_amount, total_amount,
+                                notes, st.session_state.user['username']
+                            ))
+                            conn.commit()
+                            st.success(f"Invoice {inv_no} created successfully for USh {total_amount:,.0f}")
+                            log_action("create_invoice", f"Created {inv_no} for student {student_id} - {total_amount}", st.session_state.user['username'])
+                            safe_rerun()
+                    except Exception as e:
+                        st.error(f"Error creating invoice: {str(e)}")
                 conn.close()
     with tab_edit_inv:
         st.subheader("Edit Invoice")
