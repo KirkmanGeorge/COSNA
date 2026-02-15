@@ -1101,12 +1101,31 @@ elif page == "Students":
                                 st.error(f"Error recording payment: {e}")
             st.subheader("Student Ledger")
             ledger_df = pd.read_sql(f"""
-                SELECT 'Invoice' as Type, issue_date as Date, invoice_number as Reference, total_amount as Debit, 0 as Credit, notes as Description
-                FROM invoices WHERE student_id = ?
-                UNION ALL
-                SELECT 'Payment' as Type, payment_date as Date, receipt_number as Reference, 0 as Debit, amount as Credit, notes as Description
-                FROM payments p JOIN invoices i ON p.invoice_id = i.id WHERE i.student_id = ?
-                ORDER BY Date
+                SELECT * FROM (
+                    SELECT 
+                        'Invoice' AS Type, 
+                        issue_date AS Date, 
+                        invoice_number AS Reference, 
+                        total_amount AS Debit, 
+                        0 AS Credit, 
+                        notes AS Description
+                    FROM invoices 
+                    WHERE student_id = ?
+                    
+                    UNION ALL
+                    
+                    SELECT 
+                        'Payment' AS Type, 
+                        payment_date AS Date, 
+                        receipt_number AS Reference, 
+                        0 AS Debit, 
+                        amount AS Credit, 
+                        notes AS Description
+                    FROM payments p 
+                    JOIN invoices i ON p.invoice_id = i.id 
+                    WHERE i.student_id = ?
+                ) AS combined
+                ORDER BY Date ASC
             """, conn, params=(student_id, student_id))
             if not ledger_df.empty:
                 ledger_df['Balance'] = ledger_df['Debit'] - ledger_df['Credit']
