@@ -1100,8 +1100,8 @@ elif page == "Students":
                                     pass
                                 st.error(f"Error recording payment: {e}")
             st.subheader("Student Ledger")
-            ledger_df = pd.read_sql(f"""
-                SELECT * FROM (
+            try:
+                ledger_df = pd.read_sql(f"""
                     SELECT 
                         'Invoice' AS Type, 
                         issue_date AS Date, 
@@ -1124,17 +1124,20 @@ elif page == "Students":
                     FROM payments p 
                     JOIN invoices i ON p.invoice_id = i.id 
                     WHERE i.student_id = ?
-                ) AS combined
-                ORDER BY Date ASC
-            """, conn, params=(student_id, student_id))
-            if not ledger_df.empty:
-                ledger_df['Balance'] = ledger_df['Debit'] - ledger_df['Credit']
-                ledger_df['Balance'] = ledger_df['Balance'].cumsum()
-                st.dataframe(ledger_df, use_container_width=True)
-                download_options(ledger_df, filename_base=f"student_ledger_{student_id}", title=f"Ledger for {student_name}")
-            else:
-                st.info("No ledger entries for this student")
-        conn.close()
+                    
+                    ORDER BY Date ASC
+                """, conn, params=(student_id, student_id))
+            
+                if ledger_df.empty:
+                    st.info("No ledger entries for this student yet.")
+                else:
+                    ledger_df['Date'] = pd.to_datetime(ledger_df['Date']).dt.strftime('%Y-%m-%d')
+                    ledger_df['Balance'] = (ledger_df['Debit'] - ledger_df['Credit']).cumsum()
+                    st.dataframe(ledger_df, use_container_width=True, hide_index=True)
+                    download_options(ledger_df, filename_base=f"student_ledger_{student_id}", title=f"Ledger for {student_name}")
+            
+            except Exception as e:
+                st.error(f"Ledger could not be loaded: {str(e)}")
 # ---------------------------
 # Staff
 # ---------------------------
