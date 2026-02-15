@@ -277,6 +277,33 @@ def initialize_database():
             UNIQUE(academic_year, term)
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS staff (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            normalized_name TEXT,
+            staff_type TEXT CHECK(staff_type IN ('Teaching', 'Non-Teaching')),
+            position TEXT,
+            hire_date DATE,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS staff_transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            staff_id INTEGER,
+            date DATE,
+            transaction_type TEXT CHECK(transaction_type IN ('Salary', 'Allowance', 'Advance', 'Other')),
+            amount REAL,
+            description TEXT,
+            payment_method TEXT CHECK(payment_method IN ('Cash','Bank Transfer','Mobile Money','Cheque')),
+            voucher_number TEXT UNIQUE,
+            approved_by TEXT,
+            created_by TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(staff_id) REFERENCES staff(id)
+        )
+    ''')
     conn.commit()
     # Safe migrations
     safe_alter_add_column(conn, "incomes", "created_by TEXT")
@@ -305,6 +332,14 @@ def initialize_database():
         for r in rows:
             if (r["normalized_name"] is None or r["normalized_name"] == "") and r["name"]:
                 conn.execute("UPDATE students SET normalized_name = ? WHERE id = ?", (normalize_text(r["name"]), r["id"]))
+        conn.commit()
+    except:
+        pass
+    try:
+        rows = conn.execute("SELECT id, name, normalized_name FROM staff").fetchall()
+        for r in rows:
+            if (r["normalized_name"] is None or r["normalized_name"] == "") and r["name"]:
+                conn.execute("UPDATE staff SET normalized_name = ? WHERE id = ?", (normalize_text(r["name"]), r["id"]))
         conn.commit()
     except:
         pass
@@ -531,17 +566,17 @@ def show_login_page():
                 st.image(LOGO_FILENAME, width=160)
             except Exception:
                 pass
-        else:
-            st.info("Upload school badge (optional) to display on login and reports")
+        # else:
+        #     st.info("Upload school badge (optional) to display on login and reports")
     with col2:
         with st.form("login_form"):
             username = st.text_input("Username")
             password = st.text_input("Password", type="password")
-            uploaded_logo = st.file_uploader("Upload School Badge (PNG/JPG) — optional", type=["png","jpg","jpeg"])
+            # uploaded_logo = st.file_uploader("Upload School Badge (PNG/JPG) — optional", type=["png","jpg","jpeg"])
             submit = st.form_submit_button("Login")
             if submit:
-                if uploaded_logo is not None:
-                    save_uploaded_logo(uploaded_logo)
+                # if uploaded_logo is not None:
+                #     save_uploaded_logo(uploaded_logo)
                 if not username or not password:
                     st.error("Enter username and password")
                 else:
@@ -609,7 +644,7 @@ with st.sidebar:
 # ---------------------------
 # Main navigation
 # ---------------------------
-page = st.sidebar.radio("Menu", ["Dashboard", "Students", "Uniforms", "Finances", "Financial Report", "Fee Management", "Cashbook", "Audit Log"])
+page = st.sidebar.radio("Menu", ["Dashboard", "Students", "Staff", "Uniforms", "Finances", "Financial Report", "Fee Management", "Cashbook", "Audit Log", "User Settings"])
 # ---------------------------
 # Dashboard
 # ---------------------------
@@ -1064,6 +1099,229 @@ elif page == "Students":
                                 except Exception:
                                     pass
                                 st.error(f"Error recording payment: {e}")
+            st.subheader("Student Ledger")
+            ledger_df = pd.read_sql(f"""
+                SELECT 'Invoice' as Type, issue_date as Date, invoice_number as Reference, total_amount as Debit, 0 as Credit, notes as Description
+                FROM invoices WHERE student_id = ?
+                UNION ALL
+                SELECT 'Payment' as Type, payment_date as Date, receipt_number as Reference, 0 as Debit, amount as Credit, notes as Description
+                FROM payments p JOIN invoices i ON p.invoice_id = i.id WHERE i.student_id = ?
+                ORDER BY Date
+            """, conn, params=(student_id, student_id))
+            if not ledger_df.empty:
+                ledger_df['Balance'] = ledger_df['Debit'] - ledger_df['Credit']
+                ledger_df['Balance'] = ledger_df['Balance'].cumsum()
+                st.dataframe(ledger_df, use_container_width=True)
+                download_options(ledger_df, filename_base=f"student_ledger_{student_id}", title=f"Ledger for {student_name}")
+            else:
+                st.info("No ledger entries for this student")
+        conn.close()
+# ---------------------------
+# Staff
+# ---------------------------
+elif page == "Staff":
+    st.header("Staff")
+    tab_view, tab_add, tab_edit, tab_delete, tab_trans = st.tabs(["View & Export", "Add Staff", "Edit Staff", "Delete Staff", "Staff Transactions"])
+    # View & Export
+    with tab_view:
+        conn = get_db_connection()
+        staff_types = ["All Types", "Teaching", "Non-Teaching"]
+        selected_type = st.selectbox("Filter by Staff Type", staff_types)
+        try:
+            query = "SELECT id as ID, name as Name, staff_type as 'Staff Type', position as Position, hire_date as 'Hire Date' FROM staff"
+            conditions = []
+            params = []
+            if selected_type != "All Types":
+                conditions.append("staff_type = ?")
+                params.append(selected_type)
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
+            df = pd.read_sql_query(query, conn, params=params)
+            if df.empty:
+                st.info("No staff found")
+            else:
+                st.dataframe(df, use_container_width=True)
+                download_options(df, filename_base="staff", title="Staff Report")
+        except Exception:
+            st.info("No staff records yet or error loading data")
+        conn.close()
+    # Add Staff
+    with tab_add:
+        st.subheader("Add Staff")
+        conn = get_db_connection()
+        with st.form("add_staff_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                name = st.text_input("Full Name")
+                staff_type = st.radio("Staff Type", ["Teaching", "Non-Teaching"], horizontal=True)
+            with col2:
+                position = st.text_input("Position")
+                hire_date = st.date_input("Hire Date", value=date.today())
+            submitted = st.form_submit_button("Add Staff")
+        if submitted:
+            if not name:
+                st.error("Provide staff name")
+            else:
+                try:
+                    existing = [r["normalized_name"] for r in conn.execute("SELECT normalized_name FROM staff").fetchall() if r["normalized_name"]]
+                except Exception:
+                    existing = []
+                nname = normalize_text(name)
+                dup, match = is_near_duplicate(nname, existing)
+                if dup:
+                    st.warning(f"A similar staff already exists: '{match}'. Please verify before adding.")
+                else:
+                    try:
+                        cur = conn.cursor()
+                        cur.execute("""
+                            INSERT INTO staff (name, normalized_name, staff_type, position, hire_date)
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (name.strip(), nname, staff_type, position, hire_date.isoformat()))
+                        conn.commit()
+                        staff_id = cur.lastrowid
+                        st.success("Staff added successfully")
+                        log_action("add_staff", f"Added staff {name} (ID: {staff_id})", st.session_state.user['username'])
+                    except Exception as e:
+                        st.error(f"Error adding staff: {e}")
+        conn.close()
+    # Edit Staff
+    with tab_edit:
+        st.subheader("Edit Staff")
+        conn = get_db_connection()
+        staff = pd.read_sql("SELECT id, name, staff_type, position, hire_date FROM staff ORDER BY name", conn)
+        if staff.empty:
+            st.info("No staff available to edit")
+        else:
+            selected = st.selectbox("Select Staff to Edit", staff.apply(lambda x: f"{x['name']} (ID: {x['id']})", axis=1))
+            staff_id = int(selected.split("(ID: ")[1].replace(")", ""))
+            staff_row = conn.execute("SELECT * FROM staff WHERE id = ?", (staff_id,)).fetchone()
+            with st.form("edit_staff_form"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    name = st.text_input("Full Name", value=staff_row['name'])
+                    staff_type = st.radio("Staff Type", ["Teaching", "Non-Teaching"], index=0 if staff_row['staff_type'] == "Teaching" else 1)
+                with col2:
+                    position = st.text_input("Position", value=staff_row['position'])
+                    hire_date = st.date_input("Hire Date", value=date.fromisoformat(staff_row['hire_date']))
+                submitted = st.form_submit_button("Update Staff")
+            if submitted:
+                if not name:
+                    st.error("Provide staff name")
+                else:
+                    try:
+                        existing = [r["normalized_name"] for r in conn.execute("SELECT normalized_name FROM staff WHERE id != ?", (staff_id,)).fetchall() if r["normalized_name"]]
+                        nname = normalize_text(name)
+                        dup, match = is_near_duplicate(nname, existing)
+                        if dup:
+                            st.warning(f"A similar staff already exists: '{match}'. Please verify before updating.")
+                        else:
+                            cur = conn.cursor()
+                            cur.execute("""
+                                UPDATE staff SET name = ?, normalized_name = ?, staff_type = ?, position = ?, hire_date = ?
+                                WHERE id = ?
+                            """, (name.strip(), nname, staff_type, position, hire_date.isoformat(), staff_id))
+                            conn.commit()
+                            st.success("Staff updated successfully")
+                            log_action("edit_staff", f"Updated staff {name} (ID: {staff_id})", st.session_state.user['username'])
+                            safe_rerun()
+                    except Exception as e:
+                        st.error(f"Error updating staff: {e}")
+        conn.close()
+    # Delete Staff
+    with tab_delete:
+        require_role(["Admin"])
+        st.subheader("Delete Staff")
+        st.warning("Deleting a staff may affect related records like transactions. Proceed with caution.")
+        conn = get_db_connection()
+        staff = pd.read_sql("SELECT id, name FROM staff ORDER BY name", conn)
+        if staff.empty:
+            st.info("No staff available to delete")
+        else:
+            selected = st.selectbox("Select Staff to Delete", staff.apply(lambda x: f"{x['name']} (ID: {x['id']})", axis=1), key="select_staff_to_delete")
+            staff_id = int(selected.split("(ID: ")[1].replace(")", ""))
+            if st.checkbox("Confirm deletion", key=f"confirm_delete_staff_{staff_id}"):
+                if st.button("Delete Staff", key=f"delete_staff_btn_{staff_id}"):
+                    try:
+                        cur = conn.cursor()
+                        cur.execute("DELETE FROM staff WHERE id = ?", (staff_id,))
+                        conn.commit()
+                        st.success("Staff deleted successfully")
+                        log_action("delete_staff", f"Deleted staff ID: {staff_id}", st.session_state.user['username'])
+                        safe_rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("Cannot delete staff due to related records (e.g., transactions). Delete those first.")
+                    except Exception as e:
+                        st.error(f"Error deleting staff: {e}")
+        conn.close()
+    # Staff Transactions
+    with tab_trans:
+        conn = get_db_connection()
+        st.subheader("Staff Transactions")
+        staff = pd.read_sql("SELECT id, name FROM staff ORDER BY name", conn)
+        if staff.empty:
+            st.info("No staff available")
+        else:
+            selected = st.selectbox("Select Staff", staff.apply(lambda x: f"{x['name']} (ID: {x['id']})", axis=1))
+            staff_name = selected.split(" (ID: ")[0]
+            staff_id = int(selected.split("(ID: ")[1].replace(")", ""))
+            trans_df = pd.read_sql("SELECT date as Date, transaction_type as Type, amount as Amount, description as Description, payment_method as 'Payment Method', voucher_number as 'Voucher No' FROM staff_transactions WHERE staff_id = ? ORDER BY date DESC", conn, params=(staff_id,))
+            if trans_df.empty:
+                st.info("No transactions for this staff")
+            else:
+                st.dataframe(trans_df, use_container_width=True)
+                download_options(trans_df, filename_base=f"staff_transactions_{staff_id}", title=f"Transactions for {staff_name}")
+            st.subheader("Record Transaction")
+            with st.form("staff_transaction_form"):
+                trans_date = st.date_input("Date", date.today())
+                trans_type = st.selectbox("Type", ["Salary", "Allowance", "Advance", "Other"])
+                amount = st.number_input("Amount (USh)", min_value=0.0, step=100.0)
+                description = st.text_area("Description")
+                pay_method = st.selectbox("Payment Method", ["Cash","Bank Transfer","Mobile Money","Cheque"])
+                voucher_no = st.text_input("Voucher Number", value=generate_voucher_number())
+                approved_by = st.text_input("Approved By")
+                submit_trans = st.form_submit_button("Record Transaction")
+            if submit_trans:
+                if amount <= 0:
+                    st.error("Enter a positive amount")
+                else:
+                    try:
+                        cur = conn.cursor()
+                        conn.isolation_level = None
+                        cur.execute("BEGIN")
+                        cat_row = conn.execute("SELECT id FROM expense_categories WHERE name = 'Salaries'").fetchone()
+                        cat_id = cat_row["id"] if cat_row else None
+                        cur.execute("""
+                            INSERT INTO staff_transactions (staff_id, date, transaction_type, amount, description, payment_method, voucher_number, approved_by, created_by)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (staff_id, trans_date.isoformat(), trans_type, amount, description, pay_method, voucher_no, approved_by, st.session_state.user['username']))
+                        cur.execute("""
+                            INSERT INTO expenses (date, voucher_number, amount, category_id, description, payment_method, payee, approved_by, created_by)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (trans_date.isoformat(), voucher_no, amount, cat_id, f"{trans_type} for {staff_name}: {description}", pay_method, staff_name, approved_by, st.session_state.user['username']))
+                        cur.execute("COMMIT")
+                        st.success("Transaction recorded")
+                        log_action("staff_transaction", f"{trans_type} {amount} for staff {staff_id}", st.session_state.user['username'])
+                        safe_rerun()
+                    except sqlite3.IntegrityError:
+                        cur.execute("ROLLBACK")
+                        st.error("Voucher number already exists")
+                    except Exception as e:
+                        try:
+                            cur.execute("ROLLBACK")
+                        except:
+                            pass
+                        st.error(f"Error recording transaction: {e}")
+            st.subheader("Staff Ledger")
+            ledger_df = pd.read_sql("""
+                SELECT date as Date, transaction_type as Type, amount as Debit, description as Description, voucher_number as 'Voucher No'
+                FROM staff_transactions WHERE staff_id = ? ORDER BY date
+            """, conn, params=(staff_id,))
+            if not ledger_df.empty:
+                ledger_df['Balance'] = ledger_df['Debit'].cumsum()
+                st.dataframe(ledger_df, use_container_width=True)
+                download_options(ledger_df, filename_base=f"staff_ledger_{staff_id}", title=f"Ledger for {staff_name}")
+            else:
+                st.info("No ledger entries for this staff")
         conn.close()
 # ---------------------------
 # Uniforms
@@ -1866,92 +2124,105 @@ elif page == "Fee Management":
             selected = st.selectbox("Select Student", students.apply(lambda x: f"{x['name']} - {x['class_name']} (ID: {x['id']})", axis=1), key="select_student_for_invoice")
             student_id = int(selected.split("(ID: ")[1].replace(")", ""))
             fee_options = pd.read_sql("SELECT fs.id, c.name as class_name, fs.term, fs.academic_year, fs.total_fee FROM fee_structure fs JOIN classes c ON fs.class_id = c.id WHERE fs.class_id = (SELECT class_id FROM students WHERE id = ?) ORDER BY fs.academic_year DESC", conn, params=(student_id,))
-            if fee_options.empty:
-                st.info("No fee structure for this student's class. Define fee structure first.")
-            else:
-                chosen = st.selectbox("Choose Fee Structure", fee_options.apply(lambda x: f"{x['academic_year']} - {x['term']} (USh {x['total_fee']:,.0f})", axis=1), key="select_fee_structure")
-                idx = fee_options.index[fee_options.apply(lambda x: f"{x['academic_year']} - {x['term']} (USh {x['total_fee']:,.0f})", axis=1) == chosen][0]
-                fee_row = fee_options.loc[idx]
-                issue_date = st.date_input("Issue Date", date.today())
-                due_date = st.date_input("Due Date", date.today())
-                notes = st.text_area("Notes")
-                if st.button("Create Invoice"):
-                    try:
-                        cur = conn.cursor()
-                        existing_invoice = cur.execute("SELECT id FROM invoices WHERE student_id = ? AND term = ? AND academic_year = ?", (student_id, fee_row['term'], fee_row['academic_year'])).fetchone()
-                        if existing_invoice:
-                            st.error("An invoice for this student, term, and academic year already exists. Cannot create duplicate.")
+                        if fee_options.empty:
+                            st.info("No fee structure defined for this student's class yet.")
                         else:
-                            inv_no = generate_invoice_number()
-                            total_amount = float(fee_row['total_fee'])
-                            cur.execute("""
-                                INSERT INTO invoices (invoice_number, student_id, issue_date, due_date, academic_year, term, total_amount, paid_amount, balance_amount, status, notes, created_by)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'Pending', ?, ?)
-                            """, (inv_no, student_id, issue_date.isoformat(), due_date.isoformat(), fee_row['academic_year'], fee_row['term'], total_amount, total_amount, notes, st.session_state.user['username']))
-                            conn.commit()
-                            st.success(f"Invoice {inv_no} created for USh {total_amount:,.0f}")
-                            log_action("create_invoice", f"Invoice {inv_no} for student {student_id} amount {total_amount}", st.session_state.user['username'])
-                            safe_rerun()
-                    except Exception as e:
-                        st.error(f"Error creating invoice: {e}")
-        conn.close()
+                            chosen = st.selectbox("Choose Fee Structure", fee_options.apply(lambda x: f"{x['academic_year']} - {x['term']} (USh {x['total_fee']:,.0f})", axis=1), key="select_fee_structure")
+                            idx = fee_options.index[fee_options.apply(lambda x: f"{x['academic_year']} - {x['term']} (USh {x['total_fee']:,.0f})", axis=1) == chosen][0]
+                            fee_row = fee_options.loc[idx]
+                            issue_date = st.date_input("Issue Date", date.today())
+                            due_date = st.date_input("Due Date", date.today())
+                            notes = st.text_area("Notes")
+                            if st.button("Create Invoice"):
+                                try:
+                                    cur = conn.cursor()
+                                    existing_invoice = cur.execute(
+                                        "SELECT id FROM invoices WHERE student_id = ? AND term = ? AND academic_year = ?",
+                                        (student_id, fee_row['term'], fee_row['academic_year'])
+                                    ).fetchone()
+                                    if existing_invoice:
+                                        st.error("An invoice already exists for this student, term, and academic year.")
+                                    else:
+                                        inv_no = generate_invoice_number()
+                                        total_amount = float(fee_row['total_fee'])
+                                        cur.execute("""
+                                            INSERT INTO invoices (
+                                                invoice_number, student_id, issue_date, due_date, academic_year, term,
+                                                total_amount, paid_amount, balance_amount, status, notes, created_by
+                                            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'Pending', ?, ?)
+                                        """, (
+                                            inv_no, student_id, issue_date.isoformat(), due_date.isoformat(),
+                                            fee_row['academic_year'], fee_row['term'], total_amount, total_amount,
+                                            notes, st.session_state.user['username']
+                                        ))
+                                        conn.commit()
+                                        st.success(f"Invoice {inv_no} created successfully for USh {total_amount:,.0f}")
+                                        log_action("create_invoice", f"Created {inv_no} for student {student_id} - {total_amount}", st.session_state.user['username'])
+                                        safe_rerun()
+                                except Exception as e:
+                                    st.error(f"Error creating invoice: {str(e)}")
+                conn.close()
     with tab_edit_inv:
         st.subheader("Edit Invoice")
         conn = get_db_connection()
-        invoices = pd.read_sql("SELECT i.id, i.invoice_number, s.name as student_name FROM invoices i JOIN students s ON i.student_id = s.id ORDER BY i.issue_date DESC", conn)
+        invoices = pd.read_sql(
+            "SELECT i.id, i.invoice_number, s.name as student_name, i.total_amount, i.paid_amount, i.balance_amount "
+            "FROM invoices i JOIN students s ON i.student_id = s.id ORDER BY i.issue_date DESC", conn
+        )
         if invoices.empty:
-            st.info("No invoices to edit")
+            st.info("No invoices available to edit")
         else:
-            selected_inv = st.selectbox("Select Invoice by Number", invoices['invoice_number'].tolist(), key="select_invoice_to_edit")
+            selected_inv = st.selectbox("Select Invoice", invoices['invoice_number'].tolist())
             inv_row = conn.execute("SELECT * FROM invoices WHERE invoice_number = ?", (selected_inv,)).fetchone()
             with st.form("edit_invoice_form"):
                 issue_date = st.date_input("Issue Date", value=date.fromisoformat(inv_row['issue_date']))
-                due_date = st.date_input("Due Date", value=date.fromisoformat(inv_row['due_date']))
-                total_amount = st.number_input("Total Amount", min_value=0.0, value=float(inv_row['total_amount']))
-                notes = st.text_area("Notes", value=inv_row['notes'])
+                due_date   = st.date_input("Due Date",   value=date.fromisoformat(inv_row['due_date']))
+                total_amount = st.number_input("Total Amount (USh)", min_value=0.0, value=float(inv_row['total_amount']), step=1000.0)
+                notes = st.text_area("Notes", value=inv_row['notes'] or "")
                 submit_edit = st.form_submit_button("Update Invoice")
             if submit_edit:
                 try:
-                    new_balance = total_amount - float(inv_row['paid_amount'])
+                    new_balance = total_amount - float(inv_row['paid_amount'] or 0)
                     new_status = 'Fully Paid' if new_balance <= 0 else 'Partially Paid' if inv_row['paid_amount'] > 0 else 'Pending'
                     cur = conn.cursor()
                     cur.execute("""
-                        UPDATE invoices SET issue_date = ?, due_date = ?, total_amount = ?, balance_amount = ?, status = ?, notes = ?
+                        UPDATE invoices 
+                        SET issue_date = ?, due_date = ?, total_amount = ?, balance_amount = ?, status = ?, notes = ?
                         WHERE id = ?
                     """, (issue_date.isoformat(), due_date.isoformat(), total_amount, new_balance, new_status, notes, inv_row['id']))
                     conn.commit()
-                    st.success("Invoice updated")
-                    log_action("edit_invoice", f"Updated invoice {selected_inv}", st.session_state.user['username'])
+                    st.success("Invoice updated successfully")
+                    log_action("edit_invoice", f"Updated invoice {selected_inv} to {total_amount}", st.session_state.user['username'])
                     safe_rerun()
                 except Exception as e:
-                    st.error(f"Error updating invoice: {e}")
+                    st.error(f"Error updating invoice: {str(e)}")
         conn.close()
     with tab_delete_inv:
         require_role(["Admin"])
         st.subheader("Delete Invoice")
-        st.warning("Deleting an invoice will not delete related payments. Proceed with caution.")
+        st.warning("This action is permanent and cannot be undone. Related payments will remain in the system.")
         conn = get_db_connection()
         invoices = pd.read_sql("SELECT id, invoice_number FROM invoices ORDER BY issue_date DESC", conn)
         if invoices.empty:
             st.info("No invoices to delete")
         else:
-            selected_inv = st.selectbox("Select Invoice to Delete by Number", invoices['invoice_number'].tolist(), key="select_invoice_to_delete")
+            selected_inv = st.selectbox("Select Invoice to Delete", invoices['invoice_number'].tolist(), key="del_inv_select")
             inv_id = int(invoices[invoices['invoice_number'] == selected_inv]['id'].iloc[0])
-            if st.checkbox("Confirm deletion", key=f"confirm_delete_invoice_{inv_id}"):
-                if st.button("Delete Invoice", key=f"delete_invoice_btn_{inv_id}"):
-                    try:
-                        cur = conn.cursor()
-                        cur.execute("DELETE FROM invoices WHERE id = ?", (inv_id,))
-                        conn.commit()
-                        st.success("Invoice deleted successfully")
-                        log_action("delete_invoice", f"Deleted invoice ID: {inv_id}", st.session_state.user['username'])
-                        safe_rerun()
-                    except Exception as e:
-                        st.error(f"Error deleting invoice: {e}")
+            confirm = st.checkbox(f"Yes, permanently delete invoice {selected_inv}")
+            if confirm and st.button("Confirm Delete", type="primary"):
+                try:
+                    cur = conn.cursor()
+                    cur.execute("DELETE FROM invoices WHERE id = ?", (inv_id,))
+                    conn.commit()
+                    st.success(f"Invoice {selected_inv} deleted successfully")
+                    log_action("delete_invoice", f"Deleted invoice {selected_inv} (ID: {inv_id})", st.session_state.user['username'])
+                    safe_rerun()
+                except Exception as e:
+                    st.error(f"Error deleting invoice: {str(e)}")
         conn.close()
 # ────────────────────────────────────────────────
-# Footer / Final Closing
+# Footer
 # ────────────────────────────────────────────────
 st.markdown("---")
-st.caption(f"© COSNA School Management System • {datetime.now().year} • FULL FIXED VERSION")
+st.caption(f"© COSNA School Management System • {datetime.now().year}")
 st.caption("Developed for Cosna Daycare, Nursery, Day and Boarding Primary School Kiyinda-Mityana")
