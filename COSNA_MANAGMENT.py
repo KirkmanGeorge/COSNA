@@ -2220,6 +2220,97 @@ elif page == "Fee Management":
                 except Exception as e:
                     st.error(f"Error deleting invoice: {str(e)}")
         conn.close()
+# ---------------------------
+# User Settings
+# ---------------------------
+elif page == "User Settings":
+    st.header("User Settings")
+    st.markdown("Manage your account preferences and security.")
+
+    conn = get_db_connection()
+    user = st.session_state.user
+    user_id = user["id"]
+    current_username = user["username"]
+    current_full_name = user.get("full_name", current_username)
+
+    tab_profile, tab_password = st.tabs(["Profile", "Change Password"])
+
+    with tab_profile:
+        st.subheader("Update Profile")
+        with st.form("update_profile_form"):
+            new_full_name = st.text_input("Full Name / Display Name", value=current_full_name)
+            # You can add more fields later (phone, email, preferred theme, etc.)
+            # new_email = st.text_input("Email", value="...")
+            # theme = st.selectbox("Preferred Theme", ["Light", "Dark", "System"])
+
+            submit_profile = st.form_submit_button("Save Profile Changes")
+
+        if submit_profile:
+            if not new_full_name.strip():
+                st.error("Full name cannot be empty")
+            else:
+                try:
+                    cur = conn.cursor()
+                    cur.execute(
+                        "UPDATE users SET full_name = ? WHERE id = ?",
+                        (new_full_name.strip(), user_id)
+                    )
+                    conn.commit()
+                    # Update session state
+                    st.session_state.user["full_name"] = new_full_name.strip()
+                    st.success("Profile updated successfully")
+                    log_action("update_profile", f"User {current_username} changed full name to {new_full_name}", current_username)
+                    safe_rerun()
+                except Exception as e:
+                    st.error(f"Error updating profile: {str(e)}")
+
+    with tab_password:
+        st.subheader("Change Password")
+        with st.form("change_password_form"):
+            current_password = st.text_input("Current Password", type="password")
+            new_password = st.text_input("New Password", type="password")
+            confirm_password = st.text_input("Confirm New Password", type="password")
+
+            submit_password = st.form_submit_button("Change Password")
+
+        if submit_password:
+            if not current_password or not new_password or not confirm_password:
+                st.error("All password fields are required")
+            elif new_password != confirm_password:
+                st.error("New password and confirmation do not match")
+            elif len(new_password) < 6:
+                st.error("New password must be at least 6 characters long")
+            else:
+                try:
+                    # Verify current password
+                    db_user = conn.execute(
+                        "SELECT password_hash FROM users WHERE id = ?",
+                        (user_id,)
+                    ).fetchone()
+
+                    if db_user and verify_password(db_user["password_hash"], current_password):
+                        # Update to new password
+                        new_hash = hash_password(new_password)
+                        cur = conn.cursor()
+                        cur.execute(
+                            "UPDATE users SET password_hash = ? WHERE id = ?",
+                            (new_hash, user_id)
+                        )
+                        conn.commit()
+                        st.success("Password changed successfully! Please log in again with the new password.")
+                        log_action("change_password", f"User {current_username} changed password", current_username)
+                        # Optional: force logout after password change
+                        # st.session_state.user = None
+                        # safe_rerun()
+                    else:
+                        st.error("Current password is incorrect")
+                except Exception as e:
+                    st.error(f"Error changing password: {str(e)}")
+
+    conn.close()
+
+    st.markdown("---")
+    st.caption("For security reasons, major account changes (role, username) can only be performed by an Administrator.")
 # ────────────────────────────────────────────────
 # Footer
 # ────────────────────────────────────────────────
