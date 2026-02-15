@@ -1107,8 +1107,7 @@ elif page == "Students":
                         issue_date AS Date, 
                         invoice_number AS Reference, 
                         total_amount AS Debit, 
-                        0 AS Credit, 
-                        notes AS Invoice_Notes          -- <-- renamed to avoid collision
+                        0 AS Credit
                     FROM invoices 
                     WHERE student_id = ?
                     
@@ -1119,8 +1118,7 @@ elif page == "Students":
                         payment_date AS Date, 
                         receipt_number AS Reference, 
                         0 AS Debit, 
-                        amount AS Credit, 
-                        notes AS Payment_Notes          -- <-- renamed to avoid collision
+                        amount AS Credit
                     FROM payments p 
                     JOIN invoices i ON p.invoice_id = i.id 
                     WHERE i.student_id = ?
@@ -1131,13 +1129,9 @@ elif page == "Students":
                 if ledger_df.empty:
                     st.info("No ledger entries for this student yet.")
                 else:
-                    # Optional: Combine notes into one column if you want
-                    ledger_df['Notes'] = ledger_df['Invoice_Notes'].combine_first(ledger_df['Payment_Notes'])
-                    ledger_df = ledger_df.drop(columns=['Invoice_Notes', 'Payment_Notes'])  # clean up
-            
                     ledger_df['Date'] = pd.to_datetime(ledger_df['Date']).dt.strftime('%Y-%m-%d')
                     ledger_df['Balance'] = (ledger_df['Debit'] - ledger_df['Credit']).cumsum()
-                    
+                    ledger_df['Balance'] = ledger_df['Balance'].round(0).astype(int)  # clean display
                     st.dataframe(ledger_df, use_container_width=True, hide_index=True)
                     download_options(ledger_df, filename_base=f"student_ledger_{student_id}", title=f"Ledger for {student_name}")
             
