@@ -2105,7 +2105,7 @@ elif page == "Fee Management":
                 tuition_fee = st.number_input("Tuition Fee", min_value=0.0, value=0.0, step=100.0)
                 uniform_fee = st.number_input("Uniform Fee", min_value=0.0, value=0.0, step=100.0)
                 activity_fee = st.number_input("Activity Fee", min_value=0.0, value=0.0, step=100.0)
-                exam_fee = st.number_input("Exam Fee", min_value=0.0, value=0.0, step=100.0)
+                transport_fee = st.number_input("Transport Fee", min_value=0.0, value=0.0, step=100.0)
                 library_fee = st.number_input("Library Fee", min_value=0.0, value=0.0, step=100.0)
                 other_fee = st.number_input("Other Fee", min_value=0.0, value=0.0, step=100.0)
                 create_fee = st.form_submit_button("Create/Update Fee Structure")
