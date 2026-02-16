@@ -2111,23 +2111,23 @@ elif page == "Fee Management":
                 create_fee = st.form_submit_button("Create/Update Fee Structure")
             if create_fee:
                 try:
-                    total_fee = sum([tuition_fee, uniform_fee, activity_fee, exam_fee, library_fee, other_fee])
+                    total_fee = sum([tuition_fee, uniform_fee, activity_fee, transport_fee, library_fee, other_fee])
                     cur = conn.cursor()
                     existing = cur.execute("SELECT id FROM fee_structure WHERE class_id = ? AND term = ? AND academic_year = ?", (cls_id, term, academic_year)).fetchone()
                     if existing:
                         cur.execute("""
-                            UPDATE fee_structure SET tuition_fee=?, uniform_fee=?, activity_fee=?, exam_fee=?, library_fee=?, other_fee=?, total_fee=?, created_at=CURRENT_TIMESTAMP
+                            UPDATE fee_structure SET tuition_fee=?, uniform_fee=?, activity_fee=?, transport_fee=?, library_fee=?, other_fee=?, total_fee=?, created_at=CURRENT_TIMESTAMP
                             WHERE id = ?
-                        """, (tuition_fee, uniform_fee, activity_fee, exam_fee, library_fee, other_fee, total_fee, existing[0]))
+                        """, (tuition_fee, uniform_fee, activity_fee, transport_fee, library_fee, other_fee, total_fee, existing[0]))
                         conn.commit()
                         st.success("Fee structure updated")
                         log_action("update_fee_structure", f"class {cls_name} term {term} year {academic_year} total {total_fee}", st.session_state.user['username'])
                         safe_rerun()
                     else:
                         cur.execute("""
-                            INSERT INTO fee_structure (class_id, term, academic_year, tuition_fee, uniform_fee, activity_fee, exam_fee, library_fee, other_fee, total_fee)
+                            INSERT INTO fee_structure (class_id, term, academic_year, tuition_fee, uniform_fee, activity_fee, transport_fee, library_fee, other_fee, total_fee)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (cls_id, term, academic_year, tuition_fee, uniform_fee, activity_fee, exam_fee, library_fee, other_fee, total_fee))
+                        """, (cls_id, term, academic_year, tuition_fee, uniform_fee, activity_fee, transport_fee, library_fee, other_fee, total_fee))
                         conn.commit()
                         st.success("Fee structure created")
                         log_action("create_fee_structure", f"class {cls_name} term {term} year {academic_year} total {total_fee}", st.session_state.user['username'])
