@@ -2111,7 +2111,7 @@ elif page == "Fee Management":
                 create_fee = st.form_submit_button("Create/Update Fee Structure")
             if create_fee:
                 try:
-                    total_fee = sum([tuition_fee, uniform_fee, activity_fee, transport_fee, library_fee, other_fee])
+                    total_fee = sum([tuition_fee, uniform_fee, activity_fee, exam_fee, library_fee, other_fee])
                     cur = conn.cursor()
                     existing = cur.execute("SELECT id FROM fee_structure WHERE class_id = ? AND term = ? AND academic_year = ?", (cls_id, term, academic_year)).fetchone()
                     if existing:
