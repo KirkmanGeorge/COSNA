@@ -215,7 +215,7 @@ def initialize_database():
             tuition_fee REAL DEFAULT 0,
             uniform_fee REAL DEFAULT 0,
             activity_fee REAL DEFAULT 0,
-            exam_fee REAL DEFAULT 0,
+            transport_fee REAL DEFAULT 0,
             library_fee REAL DEFAULT 0,
             other_fee REAL DEFAULT 0,
             total_fee REAL DEFAULT 0,
