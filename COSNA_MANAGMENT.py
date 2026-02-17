@@ -2216,7 +2216,7 @@ elif page == "Fee Management":
                                     except Exception as e:
                                         st.error(f"Error updating invoice: {str(e)}")
                         conn.close()
-                            with tab_delete_inv:
+                        with tab_delete_inv:
                             require_role(["Admin"])
                             st.subheader("Delete Invoice")
                             st.warning("This action is permanent and cannot be undone. Related payments will remain in the system.")
