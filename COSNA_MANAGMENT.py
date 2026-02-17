@@ -329,7 +329,7 @@ def initialize_database():
         rows = conn.execute("SELECT id, category, normalized_category FROM uniform_categories").fetchall()
         for r in rows:
             if (r["normalized_category"] is None or r["normalized_category"] == "") and r["category"]:
-                conn.execute("UPDATE uniform_categories SET normalized_category = ? WHERE id = ?", (normalize_text(r["category"]), r["id"]))
+                conn.execute("UPDATE uniform_categories SET normalized_category = %s WHERE id = %s", (normalize_text(r["category"]), r["id"]))
         conn.commit()
     except:
         pass
@@ -337,7 +337,7 @@ def initialize_database():
         rows = conn.execute("SELECT id, name, normalized_name FROM students").fetchall()
         for r in rows:
             if (r["normalized_name"] is None or r["normalized_name"] == "") and r["name"]:
-                conn.execute("UPDATE students SET normalized_name = ? WHERE id = ?", (normalize_text(r["name"]), r["id"]))
+                conn.execute("UPDATE students SET normalized_name = %s WHERE id = %s", (normalize_text(r["name"]), r["id"]))
         conn.commit()
     except:
         pass
@@ -345,7 +345,7 @@ def initialize_database():
         rows = conn.execute("SELECT id, name, normalized_name FROM staff").fetchall()
         for r in rows:
             if (r["normalized_name"] is None or r["normalized_name"] == "") and r["name"]:
-                conn.execute("UPDATE staff SET normalized_name = ? WHERE id = ?", (normalize_text(r["name"]), r["id"]))
+                conn.execute("UPDATE staff SET normalized_name = %s WHERE id = %s", (normalize_text(r["name"]), r["id"]))
         conn.commit()
     except:
         pass
@@ -354,9 +354,9 @@ def initialize_database():
         rows = conn.execute("SELECT id FROM uniform_categories").fetchall()
         for r in rows:
             cat_id = r["id"]
-            u = conn.execute("SELECT id FROM uniforms WHERE category_id = ?", (cat_id,)).fetchone()
+            u = conn.execute("SELECT id FROM uniforms WHERE category_id = %s", (cat_id,)).fetchone()
             if not u:
-                conn.execute("INSERT INTO uniforms (category_id, stock, unit_price) VALUES (?, 0, 0.0)", (cat_id,))
+                conn.execute("INSERT INTO uniforms (category_id, stock, unit_price) VALUES (%s, 0, 0.0)", (cat_id,))
         conn.commit()
     except:
         pass
@@ -365,7 +365,7 @@ def initialize_database():
         if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
             default_user = "admin"
             default_pass = "costa2026"
-            conn.execute("INSERT OR IGNORE INTO users (username, password_hash, role, full_name) VALUES (?, ?, ?, ?)",
+            conn.execute("INSERT OR IGNORE INTO users (username, password_hash, role, full_name) VALUES (%s, %s, %s, %s)",
                 (default_user, hash_password(default_pass), "Admin", "Administrator"))
             conn.commit()
     except:
@@ -382,19 +382,19 @@ def initialize_database():
     try:
         for name, gender, shared in uniform_seeds:
             nname = normalize_text(name)
-            row = conn.execute("SELECT id FROM uniform_categories WHERE normalized_category = ? OR category = ?", (nname, name)).fetchone()
+            row = conn.execute("SELECT id FROM uniform_categories WHERE normalized_category = %s OR category = %s", (nname, name)).fetchone()
             if not row:
-                conn.execute("INSERT INTO uniform_categories (category, normalized_category, gender, is_shared) VALUES (?, ?, ?, ?)",
+                conn.execute("INSERT INTO uniform_categories (category, normalized_category, gender, is_shared) VALUES (%s, %s, %s, %s)",
                     (name, nname, gender, shared))
                 conn.commit()
                 cat_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-                conn.execute("INSERT OR IGNORE INTO uniforms (category_id, stock, unit_price) VALUES (?, 0, 0.0)", (cat_id,))
+                conn.execute("INSERT OR IGNORE INTO uniforms (category_id, stock, unit_price) VALUES (%s, 0, 0.0)", (cat_id,))
                 conn.commit()
             else:
                 cat_id = row[0]
-                u = conn.execute("SELECT id FROM uniforms WHERE category_id = ?", (cat_id,)).fetchone()
+                u = conn.execute("SELECT id FROM uniforms WHERE category_id = %s", (cat_id,)).fetchone()
                 if not u:
-                    conn.execute("INSERT INTO uniforms (category_id, stock, unit_price) VALUES (?, 0, 0.0)", (cat_id,))
+                    conn.execute("INSERT INTO uniforms (category_id, stock, unit_price) VALUES (%s, 0, 0.0)", (cat_id,))
                     conn.commit()
     except:
         pass
@@ -408,8 +408,8 @@ def initialize_database():
     ]
     try:
         for cat, cat_type in expense_seeds:
-            if not conn.execute("SELECT id FROM expense_categories WHERE name = ?", (cat,)).fetchone():
-                conn.execute("INSERT INTO expense_categories (name, category_type) VALUES (?, ?)", (cat, cat_type))
+            if not conn.execute("SELECT id FROM expense_categories WHERE name = %s", (cat,)).fetchone():
+                conn.execute("INSERT INTO expense_categories (name, category_type) VALUES (%s, %s)", (cat, cat_type))
                 conn.commit()
     except:
         pass
@@ -422,7 +422,7 @@ def log_action(action, details="", performed_by="system"):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("INSERT INTO audit_log (action, details, performed_by) VALUES (?, ?, ?)", (action, details, performed_by))
+        cur.execute("INSERT INTO audit_log (action, details, performed_by) VALUES (%s, %s, %s)", (action, details, performed_by))
         conn.commit()
         conn.close()
     except Exception:
@@ -433,7 +433,7 @@ def log_action(action, details="", performed_by="system"):
 def get_user(username):
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE username = ?", (username,))
+    cur.execute("SELECT * FROM users WHERE username = %s", (username,))
     row = cur.fetchone()
     conn.close()
     return row
@@ -759,10 +759,10 @@ elif page == "Students":
             conditions = []
             params = []
             if selected_class != "All Classes":
-                conditions.append("c.name = ?")
+                conditions.append("c.name = %s")
                 params.append(selected_class)
             if selected_type != "All Types":
-                conditions.append("s.student_type = ?")
+                conditions.append("s.student_type = %s")
                 params.append(selected_type)
             if conditions:
                 query += " WHERE " + " AND ".join(conditions)
@@ -786,12 +786,12 @@ elif page == "Students":
                     st.error("Enter class name")
                 else:
                     try:
-                        exists = conn.execute("SELECT 1 FROM classes WHERE LOWER(name) = LOWER(?)", (new_class_name.strip(),)).fetchone()
+                        exists = conn.execute("SELECT 1 FROM classes WHERE LOWER(name) = LOWER(%s)", (new_class_name.strip(),)).fetchone()
                         if exists:
                             st.error(f"Class '{new_class_name}' already exists")
                         else:
                             cur = conn.cursor()
-                            cur.execute("INSERT INTO classes (name) VALUES (?)", (new_class_name.strip(),))
+                            cur.execute("INSERT INTO classes (name) VALUES (%s)", (new_class_name.strip(),))
                             conn.commit()
                             st.success(f"Class '{new_class_name}' created")
                             log_action("add_class", f"Created class: {new_class_name}", st.session_state.user['username'])
@@ -834,7 +834,7 @@ elif page == "Students":
                             cur = conn.cursor()
                             cur.execute("""
                                 INSERT INTO students (name, normalized_name, age, enrollment_date, class_id, student_type, registration_fee_paid)
-                                VALUES (?, ?, ?, ?, ?, ?, ?)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s)
                             """, (name.strip(), nname, int(age), enroll_date.isoformat(), cls_id, student_type, 1 if student_type == "New" else 0))
                             conn.commit()
                             student_id = cur.lastrowid
@@ -844,11 +844,11 @@ elif page == "Students":
                                     cat_id = cat_row["id"] if cat_row else None
                                     cur.execute("""
                                         INSERT INTO incomes (date, receipt_number, amount, source, category_id, description, payment_method, payer, received_by, created_by)
-                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                                     """, (enroll_date.isoformat(), generate_receipt_number(), REGISTRATION_FEE, "Registration Fees",
                                         cat_id, f"Registration fee for {name}", "Cash", name, st.session_state.user['username'], st.session_state.user['username']))
                                 except Exception:
-                                    cur.execute("INSERT INTO incomes (date, amount, source, created_by) VALUES (?, ?, ?, ?)",
+                                    cur.execute("INSERT INTO incomes (date, amount, source, created_by) VALUES (%s, %s, %s, %s)",
                                         (enroll_date.isoformat(), REGISTRATION_FEE, f"Registration fee for {name}", st.session_state.user['username']))
                                 conn.commit()
                             st.success("Student added successfully")
@@ -866,7 +866,7 @@ elif page == "Students":
         else:
             selected = st.selectbox("Select Student to Edit", students.apply(lambda x: f"{x['name']} - {x['class_name']} (ID: {x['id']})", axis=1))
             student_id = int(selected.split("(ID: ")[1].replace(")", ""))
-            student_row = conn.execute("SELECT * FROM students WHERE id = ?", (student_id,)).fetchone()
+            student_row = conn.execute("SELECT * FROM students WHERE id = %s", (student_id,)).fetchone()
             with st.form("edit_student_form"):
                 col1, col2 = st.columns(2)
                 with col1:
@@ -876,7 +876,7 @@ elif page == "Students":
                 with col2:
                     cls_df = pd.read_sql("SELECT id, name FROM classes ORDER BY name", conn)
                     cls_options = cls_df["name"].tolist() if not cls_df.empty else []
-                    current_cls_name = conn.execute("SELECT name FROM classes WHERE id = ?", (student_row['class_id'],)).fetchone()[0] if student_row['class_id'] else "-- No class --"
+                    current_cls_name = conn.execute("SELECT name FROM classes WHERE id = %s", (student_row['class_id'],)).fetchone()[0] if student_row['class_id'] else "-- No class --"
                     cls_name = st.selectbox("Class", cls_options, index=cls_options.index(current_cls_name) if current_cls_name in cls_options else 0)
                     cls_id = int(cls_df[cls_df["name"] == cls_name]["id"].iloc[0]) if cls_name in cls_options else None
                     student_type = st.radio("Student Type", ["New", "Returning"], index=0 if student_row['student_type'] == "New" else 1)
@@ -886,7 +886,7 @@ elif page == "Students":
                         st.error("Provide student name")
                     else:
                         try:
-                            existing = [r["normalized_name"] for r in conn.execute("SELECT normalized_name FROM students WHERE id != ?", (student_id,)).fetchall() if r["normalized_name"]]
+                            existing = [r["normalized_name"] for r in conn.execute("SELECT normalized_name FROM students WHERE id != %s", (student_id,)).fetchall() if r["normalized_name"]]
                             nname = normalize_text(name)
                             dup, match = is_near_duplicate(nname, existing)
                             if dup:
@@ -894,8 +894,8 @@ elif page == "Students":
                             else:
                                 cur = conn.cursor()
                                 cur.execute("""
-                                    UPDATE students SET name = ?, normalized_name = ?, age = ?, enrollment_date = ?, class_id = ?, student_type = ?
-                                    WHERE id = ?
+                                    UPDATE students SET name = %s, normalized_name = %s, age = %s, enrollment_date = %s, class_id = %s, student_type = %s
+                                    WHERE id = %s
                                 """, (name.strip(), nname, int(age), enroll_date.isoformat(), cls_id, student_type, student_id))
                                 conn.commit()
                                 st.success("Student updated successfully")
@@ -920,7 +920,7 @@ elif page == "Students":
                 if st.button("Delete Student", key=f"delete_student_btn_{student_id}"):
                     try:
                         cur = conn.cursor()
-                        cur.execute("DELETE FROM students WHERE id = ?", (student_id,))
+                        cur.execute("DELETE FROM students WHERE id = %s", (student_id,))
                         conn.commit()
                         st.success("Student deleted successfully")
                         log_action("delete_student", f"Deleted student ID: {student_id}", st.session_state.user['username'])
@@ -937,7 +937,7 @@ elif page == "Students":
         if view_mode == "Current Term" and st.session_state.selected_term:
             ay = st.session_state.selected_term['academic_year']
             tm = st.session_state.selected_term['term']
-            out_where = "WHERE academic_year = ? AND term = ? AND status IN ('Pending', 'Partially Paid')"
+            out_where = "WHERE academic_year = %s AND term = %s AND status IN ('Pending', 'Partially Paid')"
             params = (ay, tm)
         else:
             out_where = "WHERE status IN ('Pending', 'Partially Paid')"
@@ -972,7 +972,7 @@ elif page == "Students":
                 FROM invoices i
                 JOIN students s ON i.student_id = s.id
                 JOIN classes c ON s.class_id = c.id
-                {out_where} AND c.name = ?
+                {out_where} AND c.name = %s
                 GROUP BY s.id, s.name
                 ORDER BY Outstanding DESC
             """, conn, params=student_params)
@@ -996,10 +996,10 @@ elif page == "Students":
             student_id = int(selected.split("(ID: ")[1].replace(")", ""))
             try:
                 if view_mode == "Current Term" and st.session_state.selected_term:
-                    inv_where = "WHERE student_id = ? AND academic_year = ? AND term = ?"
+                    inv_where = "WHERE student_id = %s AND academic_year = %s AND term = %s"
                     inv_params = (student_id, ay, tm)
                 else:
-                    inv_where = "WHERE student_id = ?"
+                    inv_where = "WHERE student_id = %s"
                     inv_params = (student_id,)
                 invoices = pd.read_sql(f"SELECT * FROM invoices {inv_where} ORDER BY issue_date DESC", conn, params=inv_params)
             except Exception:
@@ -1064,7 +1064,7 @@ elif page == "Students":
                                 cur = conn.cursor()
                                 conn.isolation_level = None
                                 cur.execute("BEGIN")
-                                inv_check = cur.execute("SELECT paid_amount, balance_amount, total_amount FROM invoices WHERE id = ?", (inv_id,)).fetchone()
+                                inv_check = cur.execute("SELECT paid_amount, balance_amount, total_amount FROM invoices WHERE id = %s", (inv_id,)).fetchone()
                                 if not inv_check:
                                     cur.execute("ROLLBACK")
                                     st.error("Invoice not found")
@@ -1077,16 +1077,16 @@ elif page == "Students":
                                         new_paid = (inv_check[0] or 0) + pay_amount
                                         new_balance = current_balance - pay_amount
                                         new_status = 'Fully Paid' if new_balance <= 0 else 'Partially Paid'
-                                        cur.execute("UPDATE invoices SET paid_amount = ?, balance_amount = ?, status = ? WHERE id = ?", (new_paid, new_balance, new_status, inv_id))
+                                        cur.execute("UPDATE invoices SET paid_amount = %s, balance_amount = %s, status = %s WHERE id = %s", (new_paid, new_balance, new_status, inv_id))
                                         cur.execute("""
                                             INSERT INTO payments (invoice_id, receipt_number, payment_date, amount, payment_method, reference_number, received_by, notes, created_by)
-                                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                                         """, (inv_id, pay_receipt, pay_date.isoformat(), pay_amount, pay_method, pay_ref, st.session_state.user['username'], pay_notes, st.session_state.user['username']))
                                         cat_row = conn.execute("SELECT id FROM expense_categories WHERE name = 'Tuition Fees'").fetchone()
                                         cat_id = cat_row["id"] if cat_row else None
                                         cur.execute("""
                                             INSERT INTO incomes (date, receipt_number, amount, source, category_id, payment_method, payer, received_by, created_by, description)
-                                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                                         """, (pay_date.isoformat(), pay_receipt, pay_amount, "Tuition Fees", cat_id, pay_method, student_name, st.session_state.user['username'], st.session_state.user['username'], pay_notes))
                                         cur.execute("COMMIT")
                                         st.success("Payment recorded and invoice updated")
@@ -1108,7 +1108,7 @@ elif page == "Students":
                         total_amount AS Debit, 
                         0 AS Credit
                     FROM invoices 
-                    WHERE student_id = ?
+                    WHERE student_id = %s
                     
                     UNION ALL
                     
@@ -1120,7 +1120,7 @@ elif page == "Students":
                         amount AS Credit
                     FROM payments p 
                     JOIN invoices i ON p.invoice_id = i.id 
-                    WHERE i.student_id = ?
+                    WHERE i.student_id = %s
                     
                     ORDER BY Date ASC
                 """, conn, params=(student_id, student_id))
@@ -1151,7 +1151,7 @@ elif page == "Staff":
             conditions = []
             params = []
             if selected_type != "All Types":
-                conditions.append("staff_type = ?")
+                conditions.append("staff_type = %s")
                 params.append(selected_type)
             if conditions:
                 query += " WHERE " + " AND ".join(conditions)
@@ -1194,7 +1194,7 @@ elif page == "Staff":
                             cur = conn.cursor()
                             cur.execute("""
                                 INSERT INTO staff (name, normalized_name, staff_type, position, hire_date)
-                                VALUES (?, ?, ?, ?, ?)
+                                VALUES (%s, %s, %s, %s, %s)
                             """, (name.strip(), nname, staff_type, position, hire_date.isoformat()))
                             conn.commit()
                             staff_id = cur.lastrowid
@@ -1213,7 +1213,7 @@ elif page == "Staff":
         else:
             selected = st.selectbox("Select Staff to Edit", staff.apply(lambda x: f"{x['name']} (ID: {x['id']})", axis=1))
             staff_id = int(selected.split("(ID: ")[1].replace(")", ""))
-            staff_row = conn.execute("SELECT * FROM staff WHERE id = ?", (staff_id,)).fetchone()
+            staff_row = conn.execute("SELECT * FROM staff WHERE id = %s", (staff_id,)).fetchone()
             with st.form("edit_staff_form"):
                 col1, col2 = st.columns(2)
                 with col1:
@@ -1228,7 +1228,7 @@ elif page == "Staff":
                         st.error("Provide staff name")
                     else:
                         try:
-                            existing = [r["normalized_name"] for r in conn.execute("SELECT normalized_name FROM staff WHERE id != ?", (staff_id,)).fetchall() if r["normalized_name"]]
+                            existing = [r["normalized_name"] for r in conn.execute("SELECT normalized_name FROM staff WHERE id != %s", (staff_id,)).fetchall() if r["normalized_name"]]
                             nname = normalize_text(name)
                             dup, match = is_near_duplicate(nname, existing)
                             if dup:
@@ -1236,8 +1236,8 @@ elif page == "Staff":
                             else:
                                 cur = conn.cursor()
                                 cur.execute("""
-                                    UPDATE staff SET name = ?, normalized_name = ?, staff_type = ?, position = ?, hire_date = ?
-                                    WHERE id = ?
+                                    UPDATE staff SET name = %s, normalized_name = %s, staff_type = %s, position = %s, hire_date = %s
+                                    WHERE id = %s
                                 """, (name.strip(), nname, staff_type, position, hire_date.isoformat(), staff_id))
                                 conn.commit()
                                 st.success("Staff updated successfully")
@@ -1262,7 +1262,7 @@ elif page == "Staff":
                 if st.button("Delete Staff", key=f"delete_staff_btn_{staff_id}"):
                     try:
                         cur = conn.cursor()
-                        cur.execute("DELETE FROM staff WHERE id = ?", (staff_id,))
+                        cur.execute("DELETE FROM staff WHERE id = %s", (staff_id,))
                         conn.commit()
                         st.success("Staff deleted successfully")
                         log_action("delete_staff", f"Deleted staff ID: {staff_id}", st.session_state.user['username'])
@@ -1283,7 +1283,7 @@ elif page == "Staff":
             selected = st.selectbox("Select Staff", staff.apply(lambda x: f"{x['name']} (ID: {x['id']})", axis=1))
             staff_name = selected.split(" (ID: ")[0]
             staff_id = int(selected.split("(ID: ")[1].replace(")", ""))
-            trans_df = pd.read_sql("SELECT date as Date, transaction_type as Type, amount as Amount, description as Description, payment_method as 'Payment Method', voucher_number as 'Voucher No' FROM staff_transactions WHERE staff_id = ? ORDER BY date DESC", conn, params=(staff_id,))
+            trans_df = pd.read_sql("SELECT date as Date, transaction_type as Type, amount as Amount, description as Description, payment_method as 'Payment Method', voucher_number as 'Voucher No' FROM staff_transactions WHERE staff_id = %s ORDER BY date DESC", conn, params=(staff_id,))
             if trans_df.empty:
                 st.info("No transactions for this staff")
             else:
@@ -1311,11 +1311,11 @@ elif page == "Staff":
                         cat_id = cat_row["id"] if cat_row else None
                         cur.execute("""
                             INSERT INTO staff_transactions (staff_id, date, transaction_type, amount, description, payment_method, voucher_number, approved_by, created_by)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """, (staff_id, trans_date.isoformat(), trans_type, amount, description, pay_method, voucher_no, approved_by, st.session_state.user['username']))
                         cur.execute("""
                             INSERT INTO expenses (date, voucher_number, amount, category_id, description, payment_method, payee, approved_by, created_by)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """, (trans_date.isoformat(), voucher_no, amount, cat_id, f"{trans_type} for {staff_name}: {description}", pay_method, staff_name, approved_by, st.session_state.user['username']))
                         cur.execute("COMMIT")
                         st.success("Transaction recorded")
@@ -1333,7 +1333,7 @@ elif page == "Staff":
         st.subheader("Staff Ledger")
         ledger_df = pd.read_sql("""
             SELECT date as Date, transaction_type as Type, amount as Debit, description as Description, voucher_number as 'Voucher No'
-            FROM staff_transactions WHERE staff_id = ? ORDER BY date
+            FROM staff_transactions WHERE staff_id = %s ORDER BY date
         """, conn, params=(staff_id,))
         if not ledger_df.empty:
             ledger_df['Balance'] = ledger_df['Debit'].cumsum()
@@ -1393,7 +1393,7 @@ elif page == "Uniforms":
                         conn.isolation_level = None
                         cur.execute("BEGIN")
                         final_stock = int(set_stock) if set_stock != current_stock else current_stock + int(add_stock)
-                        cur.execute("UPDATE uniforms SET stock = ?, unit_price = ? WHERE category_id = ?", (final_stock, float(new_price), cat_id))
+                        cur.execute("UPDATE uniforms SET stock = %s, unit_price = %s WHERE category_id = %s", (final_stock, float(new_price), cat_id))
                         cur.execute("COMMIT")
                         st.success("Inventory updated")
                         log_action("update_uniform", f"Updated category {selected_category}: stock={final_stock}, price={new_price}", st.session_state.user['username'])
@@ -1435,19 +1435,19 @@ elif page == "Uniforms":
                         cur = conn.cursor()
                         conn.isolation_level = None
                         cur.execute("BEGIN")
-                        current = conn.execute("SELECT stock FROM uniforms WHERE category_id = ?", (cat_id,)).fetchone()[0]
+                        current = conn.execute("SELECT stock FROM uniforms WHERE category_id = %s", (cat_id,)).fetchone()[0]
                         if current < qty:
                             cur.execute("ROLLBACK")
                             st.error("Stock changed; insufficient stock now")
                         else:
                             new_stock = current - qty
-                            cur.execute("UPDATE uniforms SET stock = ? WHERE category_id = ?", (new_stock, cat_id))
+                            cur.execute("UPDATE uniforms SET stock = %s WHERE category_id = %s", (new_stock, cat_id))
                             amount = qty * unit_price
                             cat_row = conn.execute("SELECT id FROM expense_categories WHERE name = 'Uniform Sales'").fetchone()
                             cat_id_income = cat_row["id"] if cat_row else None
                             cur.execute("""
                                 INSERT INTO incomes (date, receipt_number, amount, source, category_id, description, payment_method, payer, received_by, created_by)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """, (date.today().isoformat(), receipt_no, amount, "Uniform Sales", cat_id_income, f"Sale of {qty} x {selected} - {notes}", payment_method, buyer or "Walk-in", st.session_state.user['username'], st.session_state.user['username']))
                             cur.execute("COMMIT")
                             st.success(f"Sale recorded. New stock: {new_stock}")
@@ -1483,11 +1483,11 @@ elif page == "Uniforms":
                     else:
                         try:
                             cur = conn.cursor()
-                            cur.execute("INSERT INTO uniform_categories (category, normalized_category, gender, is_shared) VALUES (?, ?, ?, ?)",
+                            cur.execute("INSERT INTO uniform_categories (category, normalized_category, gender, is_shared) VALUES (%s, %s, %s, %s)",
                                 (cat_name.strip(), ncat, gender, is_shared))
                             conn.commit()
                             cat_id = cur.lastrowid
-                            cur.execute("INSERT INTO uniforms (category_id, stock, unit_price) VALUES (?, ?, ?)", (cat_id, int(initial_stock), float(unit_price)))
+                            cur.execute("INSERT INTO uniforms (category_id, stock, unit_price) VALUES (%s, %s, %s)", (cat_id, int(initial_stock), float(unit_price)))
                             conn.commit()
                             st.success("Uniform category added")
                             log_action("add_uniform_category", f"Added {cat_name} stock={initial_stock} price={unit_price}", st.session_state.user['username'])
@@ -1513,7 +1513,7 @@ elif page == "Uniforms":
                         st.error("Enter category name")
                     else:
                         try:
-                            existing = [r["normalized_category"] for r in conn.execute("SELECT normalized_category FROM uniform_categories WHERE id != ?", (cat_id,)).fetchall() if r["normalized_category"]]
+                            existing = [r["normalized_category"] for r in conn.execute("SELECT normalized_category FROM uniform_categories WHERE id != %s", (cat_id,)).fetchall() if r["normalized_category"]]
                             ncat = normalize_text(new_cat_name)
                             dup, match = is_near_duplicate(ncat, existing)
                             if dup:
@@ -1521,8 +1521,8 @@ elif page == "Uniforms":
                             else:
                                 cur = conn.cursor()
                                 cur.execute("""
-                                    UPDATE uniform_categories SET category = ?, normalized_category = ?, gender = ?, is_shared = ?
-                                    WHERE id = ?
+                                    UPDATE uniform_categories SET category = %s, normalized_category = %s, gender = %s, is_shared = %s
+                                    WHERE id = %s
                                 """, (new_cat_name.strip(), ncat, new_gender, new_is_shared, cat_id))
                                 conn.commit()
                                 st.success("Category updated")
@@ -1544,8 +1544,8 @@ elif page == "Uniforms":
                 if st.button("Delete Category", key=f"delete_uniform_cat_btn_{cat_id}"):
                     try:
                         cur = conn.cursor()
-                        cur.execute("DELETE FROM uniforms WHERE category_id = ?", (cat_id,))
-                        cur.execute("DELETE FROM uniform_categories WHERE id = ?", (cat_id,))
+                        cur.execute("DELETE FROM uniforms WHERE category_id = %s", (cat_id,))
+                        cur.execute("DELETE FROM uniform_categories WHERE id = %s", (cat_id,))
                         conn.commit()
                         st.success("Category deleted successfully")
                         log_action("delete_uniform_category", f"Deleted category ID: {cat_id}", st.session_state.user['username'])
@@ -1590,7 +1590,7 @@ elif page == "Finances":
                                     cat_id = int(cat_row["id"].iloc[0])
                             cur.execute("""
                                 INSERT INTO incomes (date, receipt_number, amount, source, category_id, description, payment_method, payer, received_by, created_by)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """, (date_in.isoformat(), receipt_no, amount, source, cat_id, description, payment_method, payer, st.session_state.user['username'], st.session_state.user['username']))
                             conn.commit()
                             st.success("Income recorded")
@@ -1631,7 +1631,7 @@ elif page == "Finances":
                                     cat_id = int(cat_row["id"].iloc[0])
                             cur.execute("""
                                 INSERT INTO expenses (date, voucher_number, amount, category_id, description, payment_method, payee, approved_by, created_by)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """, (date_e.isoformat(), voucher_no, amount, cat_id, description, payment_method, payee, approved_by, st.session_state.user['username']))
                             conn.commit()
                             st.success("Expense recorded")
@@ -1647,7 +1647,7 @@ elif page == "Finances":
         if view_mode == "Current Term" and st.session_state.selected_term:
             start_d = st.session_state.selected_term['start_date']
             end_d = st.session_state.selected_term['end_date']
-            tx_where = "WHERE date BETWEEN ? AND ?"
+            tx_where = "WHERE date BETWEEN %s AND %s"
             params = (start_d, end_d)
         else:
             tx_where = ""
@@ -1714,8 +1714,8 @@ elif page == "Finances":
                                     if not cat_row.empty:
                                         cat_id = int(cat_row["id"].iloc[0])
                                 cur.execute("""
-                                    UPDATE incomes SET date = ?, receipt_number = ?, amount = ?, source = ?, category_id = ?, description = ?, payment_method = ?, payer = ?
-                                    WHERE id = ?
+                                    UPDATE incomes SET date = %s, receipt_number = %s, amount = %s, source = %s, category_id = %s, description = %s, payment_method = %s, payer = %s
+                                    WHERE id = %s
                                 """, (date_in.isoformat(), receipt_no, amount, source, cat_id, description, payment_method, payer, inc_id))
                                 conn.commit()
                                 st.success("Income updated")
@@ -1741,7 +1741,7 @@ elif page == "Finances":
                 if st.button("Delete Income", key=f"delete_income_btn_{inc_id}"):
                     try:
                         cur = conn.cursor()
-                        cur.execute("DELETE FROM incomes WHERE id = ?", (inc_id,))
+                        cur.execute("DELETE FROM incomes WHERE id = %s", (inc_id,))
                         conn.commit()
                         st.success("Income deleted successfully")
                         log_action("delete_income", f"Deleted income ID: {inc_id}", st.session_state.user['username'])
@@ -1787,8 +1787,8 @@ elif page == "Finances":
                                     if not cat_row.empty:
                                         cat_id = int(cat_row["id"].iloc[0])
                                 cur.execute("""
-                                    UPDATE expenses SET date = ?, voucher_number = ?, amount = ?, category_id = ?, description = ?, payment_method = ?, payee = ?, approved_by = ?
-                                    WHERE id = ?
+                                    UPDATE expenses SET date = %s, voucher_number = %s, amount = %s, category_id = %s, description = %s, payment_method = %s, payee = %s, approved_by = %s
+                                    WHERE id = %s
                                 """, (date_e.isoformat(), voucher_no, amount, cat_id, description, payment_method, payee, approved_by, exp_id))
                                 conn.commit()
                                 st.success("Expense updated")
@@ -1814,7 +1814,7 @@ elif page == "Finances":
                 if st.button("Delete Expense", key=f"delete_expense_btn_{exp_id}"):
                     try:
                         cur = conn.cursor()
-                        cur.execute("DELETE FROM expenses WHERE id = ?", (exp_id,))
+                        cur.execute("DELETE FROM expenses WHERE id = %s", (exp_id,))
                         conn.commit()
                         st.success("Expense deleted successfully")
                         log_action("delete_expense", f"Deleted expense ID: {exp_id}", st.session_state.user['username'])
@@ -1853,14 +1853,14 @@ elif page == "Finances":
                             pay_method_from = 'Cash' if from_account == "Cash" else 'Bank Transfer'
                             cur.execute("""
                                 INSERT INTO expenses (date, voucher_number, amount, category_id, description, payment_method, payee, approved_by, created_by)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """, (transfer_date.isoformat(), voucher_no, amount, transfer_out_id, f"Transfer to {to_account}: {description}", pay_method_from, to_account, st.session_state.user['username'], st.session_state.user['username']))
                             # Income to 'To'
                             receipt_no = generate_receipt_number()
                             pay_method_to = 'Bank Transfer' if to_account == "Bank" else 'Cash'
                             cur.execute("""
                                 INSERT INTO incomes (date, receipt_number, amount, source, category_id, description, payment_method, payer, received_by, created_by)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """, (transfer_date.isoformat(), receipt_no, amount, f"Transfer from {from_account}", transfer_in_id, f"Transfer from {from_account}: {description}", pay_method_to, from_account, st.session_state.user['username'], st.session_state.user['username']))
                             conn.commit()
                             st.success("Transfer recorded successfully")
@@ -1891,8 +1891,8 @@ elif page == "Financial Report":
         if st.button("Generate Report"):
             try:
                 if report_type == "Income vs Expense (date range)":
-                    df_inc = pd.read_sql("SELECT date as Date, receipt_number as 'Receipt No', amount as Amount, source as Source, payment_method as 'Payment Method', payer as Payer, description as Description FROM incomes WHERE date BETWEEN ? AND ? ORDER BY date", conn, params=(start_date.isoformat(), end_date.isoformat()))
-                    df_exp = pd.read_sql("SELECT date as Date, voucher_number as 'Voucher No', amount as Amount, description as Description, payment_method as 'Payment Method', payee as Payee FROM expenses WHERE date BETWEEN ? AND ? ORDER BY date", conn, params=(start_date.isoformat(), end_date.isoformat()))
+                    df_inc = pd.read_sql("SELECT date as Date, receipt_number as 'Receipt No', amount as Amount, source as Source, payment_method as 'Payment Method', payer as Payer, description as Description FROM incomes WHERE date BETWEEN %s AND %s ORDER BY date", conn, params=(start_date.isoformat(), end_date.isoformat()))
+                    df_exp = pd.read_sql("SELECT date as Date, voucher_number as 'Voucher No', amount as Amount, description as Description, payment_method as 'Payment Method', payee as Payee FROM expenses WHERE date BETWEEN %s AND %s ORDER BY date", conn, params=(start_date.isoformat(), end_date.isoformat()))
                     if df_inc.empty and df_exp.empty:
                         st.info("No transactions in this range")
                     else:
@@ -1911,9 +1911,9 @@ elif page == "Financial Report":
                     df = pd.read_sql("""
                         SELECT ec.name as Category, SUM(COALESCE(i.amount,0)) as 'Total Income', SUM(COALESCE(e.amount,0)) as 'Total Expense'
                         FROM expense_categories ec
-                        LEFT JOIN incomes i ON i.category_id = ec.id AND i.date BETWEEN ? AND ?
-                        LEFT JOIN expenses e ON e.category_id = ec.id AND e.date BETWEEN ? AND ?
-                        WHERE ec.category_type = ?
+                        LEFT JOIN incomes i ON i.category_id = ec.id AND i.date BETWEEN %s AND %s
+                        LEFT JOIN expenses e ON e.category_id = ec.id AND e.date BETWEEN %s AND %s
+                        WHERE ec.category_type = %s
                         GROUP BY ec.name
                     """, conn, params=(start_date.isoformat(), end_date.isoformat(), start_date.isoformat(), end_date.isoformat(), cat))
                     if df.empty:
@@ -1935,8 +1935,8 @@ elif page == "Financial Report":
                     else:
                         sel = st.selectbox("Select Student", students.apply(lambda x: f"{x['name']} (ID: {x['id']})", axis=1))
                         sid = int(sel.split("(ID: ")[1].replace(")", ""))
-                        df_inv = pd.read_sql("SELECT invoice_number as 'Invoice No', academic_year as 'Academic Year', term as Term, total_amount as 'Total Amount', paid_amount as 'Paid Amount', balance_amount as 'Balance Amount', status as Status, issue_date as 'Issue Date', notes as Notes FROM invoices WHERE student_id = ? ORDER BY issue_date DESC", conn, params=(sid,))
-                        df_pay = pd.read_sql("SELECT p.payment_date as 'Payment Date', p.amount as Amount, p.payment_method as 'Payment Method', p.receipt_number as 'Receipt No', p.reference_number as 'Reference No', p.notes as Notes FROM payments p JOIN invoices i ON p.invoice_id = i.id WHERE i.student_id = ? ORDER BY p.payment_date DESC", conn, params=(sid,))
+                        df_inv = pd.read_sql("SELECT invoice_number as 'Invoice No', academic_year as 'Academic Year', term as Term, total_amount as 'Total Amount', paid_amount as 'Paid Amount', balance_amount as 'Balance Amount', status as Status, issue_date as 'Issue Date', notes as Notes FROM invoices WHERE student_id = %s ORDER BY issue_date DESC", conn, params=(sid,))
+                        df_pay = pd.read_sql("SELECT p.payment_date as 'Payment Date', p.amount as Amount, p.payment_method as 'Payment Method', p.receipt_number as 'Receipt No', p.reference_number as 'Reference No', p.notes as Notes FROM payments p JOIN invoices i ON p.invoice_id = i.id WHERE i.student_id = %s ORDER BY p.payment_date DESC", conn, params=(sid,))
                         st.subheader("Invoices")
                         if df_inv.empty:
                             st.info("No invoices for this student")
@@ -1972,11 +1972,11 @@ elif page == "Cashbook":
         try:
             df_inc = pd.read_sql("""
                 SELECT date as tx_date, source || ' from ' || payer as description, amount, payment_method, 'Income' as type
-                FROM incomes WHERE date BETWEEN ? AND ?
+                FROM incomes WHERE date BETWEEN %s AND %s
             """, conn, params=(start_date.isoformat(), end_date.isoformat()))
             df_exp = pd.read_sql("""
                 SELECT date as tx_date, description || ' to ' || payee as description, amount, payment_method, 'Expense' as type
-                FROM expenses WHERE date BETWEEN ? AND ?
+                FROM expenses WHERE date BETWEEN %s AND %s
             """, conn, params=(start_date.isoformat(), end_date.isoformat()))
             combined = pd.concat([df_inc, df_exp], ignore_index=True)
             if combined.empty:
@@ -2058,11 +2058,11 @@ elif page == "Fee Management":
                 else:
                     try:
                         cur = conn.cursor()
-                        existing = cur.execute("SELECT id FROM terms WHERE academic_year = ? AND term = ?", (academic_year, term)).fetchone()
+                        existing = cur.execute("SELECT id FROM terms WHERE academic_year = %s AND term = %s", (academic_year, term)).fetchone()
                         if existing:
                             cur.execute("""
-                                UPDATE terms SET start_date = ?, end_date = ?
-                                WHERE id = ?
+                                UPDATE terms SET start_date = %s, end_date = %s
+                                WHERE id = %s
                             """, (start_date.isoformat(), end_date.isoformat(), existing[0]))
                             conn.commit()
                             st.success("Term updated")
@@ -2070,7 +2070,7 @@ elif page == "Fee Management":
                         else:
                             cur.execute("""
                                 INSERT INTO terms (academic_year, term, start_date, end_date)
-                                VALUES (?, ?, ?, ?)
+                                VALUES (%s, %s, %s, %s)
                             """, (academic_year, term, start_date.isoformat(), end_date.isoformat()))
                             conn.commit()
                             st.success("Term defined")
@@ -2110,11 +2110,11 @@ elif page == "Fee Management":
                     try:
                         total_fee = sum([tuition_fee, uniform_fee, activity_fee, exam_fee, library_fee, other_fee])
                         cur = conn.cursor()
-                        existing = cur.execute("SELECT id FROM fee_structure WHERE class_id = ? AND term = ? AND academic_year = ?", (cls_id, term, academic_year)).fetchone()
+                        existing = cur.execute("SELECT id FROM fee_structure WHERE class_id = %s AND term = %s AND academic_year = %s", (cls_id, term, academic_year)).fetchone()
                         if existing:
                             cur.execute("""
-                                UPDATE fee_structure SET tuition_fee=?, uniform_fee=?, activity_fee=?, exam_fee=?, library_fee=?, other_fee=?, total_fee=?, created_at=CURRENT_TIMESTAMP
-                                WHERE id = ?
+                                UPDATE fee_structure SET tuition_fee=%s, uniform_fee=%s, activity_fee=%s, exam_fee=%s, library_fee=%s, other_fee=%s, total_fee=%s, created_at=CURRENT_TIMESTAMP
+                                WHERE id = %s
                             """, (tuition_fee, uniform_fee, activity_fee, exam_fee, library_fee, other_fee, total_fee, existing[0]))
                             conn.commit()
                             st.success("Fee structure updated")
@@ -2123,7 +2123,7 @@ elif page == "Fee Management":
                         else:
                             cur.execute("""
                                 INSERT INTO fee_structure (class_id, term, academic_year, tuition_fee, uniform_fee, activity_fee, exam_fee, library_fee, other_fee, total_fee)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """, (cls_id, term, academic_year, tuition_fee, uniform_fee, activity_fee, exam_fee, library_fee, other_fee, total_fee))
                             conn.commit()
                             st.success("Fee structure created")
@@ -2141,7 +2141,7 @@ elif page == "Fee Management":
         else:
             selected = st.selectbox("Select Student", students.apply(lambda x: f"{x['name']} - {x['class_name']} (ID: {x['id']})", axis=1), key="select_student_for_invoice")
             student_id = int(selected.split("(ID: ")[1].replace(")", ""))
-            fee_options = pd.read_sql("SELECT fs.id, c.name as class_name, fs.term, fs.academic_year, fs.total_fee FROM fee_structure fs JOIN classes c ON fs.class_id = c.id WHERE fs.class_id = (SELECT class_id FROM students WHERE id = ? ) ORDER BY fs.academic_year DESC", conn, params=(student_id,))
+            fee_options = pd.read_sql("SELECT fs.id, c.name as class_name, fs.term, fs.academic_year, fs.total_fee FROM fee_structure fs JOIN classes c ON fs.class_id = c.id WHERE fs.class_id = (SELECT class_id FROM students WHERE id = %s ) ORDER BY fs.academic_year DESC", conn, params=(student_id,))
             if fee_options.empty:
                 st.info("No fee structure defined for this student's class yet.")
             else:
