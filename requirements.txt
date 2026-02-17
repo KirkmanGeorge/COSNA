@@ -4,3 +4,4 @@ reportlab
 xlsxwriter
 streamlit-authenticator
 pyyaml
+psycopg2-binary
