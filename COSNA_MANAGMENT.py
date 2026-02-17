@@ -2182,63 +2182,63 @@ elif page == "Fee Management":
                         st.error(f"Error creating invoice: {str(e)}")
                     conn.close()
                     with tab_edit_inv:
-                    st.subheader("Edit Invoice")
-                    conn = get_db_connection()
-                    invoices = pd.read_sql(
-                        "SELECT i.id, i.invoice_number, s.name as student_name, i.total_amount, i.paid_amount, i.balance_amount "
-                        "FROM invoices i JOIN students s ON i.student_id = s.id ORDER BY i.issue_date DESC", conn
-                    )
-                    if invoices.empty:
-                        st.info("No invoices available to edit")
-                    else:
-                        selected_inv = st.selectbox("Select Invoice", invoices['invoice_number'].tolist())
-                        inv_row = conn.execute("SELECT * FROM invoices WHERE invoice_number = %s", (selected_inv,)).fetchone()
-                        with st.form("edit_invoice_form"):
-                            issue_date = st.date_input("Issue Date", value=date.fromisoformat(inv_row['issue_date']))
-                            due_date = st.date_input("Due Date", value=date.fromisoformat(inv_row['due_date']))
-                            total_amount = st.number_input("Total Amount (USh)", min_value=0.0, value=float(inv_row['total_amount']), step=1000.0)
-                            notes = st.text_area("Notes", value=inv_row['notes'] or "")
-                            submit_edit = st.form_submit_button("Update Invoice")
-                            if submit_edit:
+                        st.subheader("Edit Invoice")
+                        conn = get_db_connection()
+                        invoices = pd.read_sql(
+                            "SELECT i.id, i.invoice_number, s.name as student_name, i.total_amount, i.paid_amount, i.balance_amount "
+                            "FROM invoices i JOIN students s ON i.student_id = s.id ORDER BY i.issue_date DESC", conn
+                        )
+                        if invoices.empty:
+                            st.info("No invoices available to edit")
+                        else:
+                            selected_inv = st.selectbox("Select Invoice", invoices['invoice_number'].tolist())
+                            inv_row = conn.execute("SELECT * FROM invoices WHERE invoice_number = %s", (selected_inv,)).fetchone()
+                            with st.form("edit_invoice_form"):
+                                issue_date = st.date_input("Issue Date", value=date.fromisoformat(inv_row['issue_date']))
+                                due_date = st.date_input("Due Date", value=date.fromisoformat(inv_row['due_date']))
+                                total_amount = st.number_input("Total Amount (USh)", min_value=0.0, value=float(inv_row['total_amount']), step=1000.0)
+                                notes = st.text_area("Notes", value=inv_row['notes'] or "")
+                                submit_edit = st.form_submit_button("Update Invoice")
+                                if submit_edit:
+                                    try:
+                                        new_balance = total_amount - float(inv_row['paid_amount'] or 0)
+                                        new_status = 'Fully Paid' if new_balance <= 0 else 'Partially Paid' if inv_row['paid_amount'] > 0 else 'Pending'
+                                        cur = conn.cursor()
+                                        cur.execute("""
+                                            UPDATE invoices 
+                                            SET issue_date = %s, due_date = %s, total_amount = %s, balance_amount = %s, status = %s, notes = %s
+                                            WHERE id = %s
+                                        """, (issue_date.isoformat(), due_date.isoformat(), total_amount, new_balance, new_status, notes, inv_row['id']))
+                                        conn.commit()
+                                        st.success("Invoice updated successfully")
+                                        log_action("edit_invoice", f"Updated invoice {selected_inv} to {total_amount}", st.session_state.user['username'])
+                                        safe_rerun()
+                                    except Exception as e:
+                                        st.error(f"Error updating invoice: {str(e)}")
+                        conn.close()
+                        with tab_delete_inv:
+                        require_role(["Admin"])
+                        st.subheader("Delete Invoice")
+                        st.warning("This action is permanent and cannot be undone. Related payments will remain in the system.")
+                        conn = get_db_connection()
+                        invoices = pd.read_sql("SELECT id, invoice_number FROM invoices ORDER BY issue_date DESC", conn)
+                        if invoices.empty:
+                            st.info("No invoices to delete")
+                        else:
+                            selected_inv = st.selectbox("Select Invoice to Delete", invoices['invoice_number'].tolist(), key="del_inv_select")
+                            inv_id = int(invoices[invoices['invoice_number'] == selected_inv]['id'].iloc[0])
+                            confirm = st.checkbox(f"Yes, permanently delete invoice {selected_inv}")
+                            if confirm and st.button("Confirm Delete", type="primary"):
                                 try:
-                                    new_balance = total_amount - float(inv_row['paid_amount'] or 0)
-                                    new_status = 'Fully Paid' if new_balance <= 0 else 'Partially Paid' if inv_row['paid_amount'] > 0 else 'Pending'
                                     cur = conn.cursor()
-                                    cur.execute("""
-                                        UPDATE invoices 
-                                        SET issue_date = %s, due_date = %s, total_amount = %s, balance_amount = %s, status = %s, notes = %s
-                                        WHERE id = %s
-                                    """, (issue_date.isoformat(), due_date.isoformat(), total_amount, new_balance, new_status, notes, inv_row['id']))
+                                    cur.execute("DELETE FROM invoices WHERE id = %s", (inv_id,))
                                     conn.commit()
-                                    st.success("Invoice updated successfully")
-                                    log_action("edit_invoice", f"Updated invoice {selected_inv} to {total_amount}", st.session_state.user['username'])
+                                    st.success(f"Invoice {selected_inv} deleted successfully")
+                                    log_action("delete_invoice", f"Deleted invoice {selected_inv} (ID: {inv_id})", st.session_state.user['username'])
                                     safe_rerun()
                                 except Exception as e:
-                                    st.error(f"Error updating invoice: {str(e)}")
-                    conn.close()
-                    with tab_delete_inv:
-                    require_role(["Admin"])
-                    st.subheader("Delete Invoice")
-                    st.warning("This action is permanent and cannot be undone. Related payments will remain in the system.")
-                    conn = get_db_connection()
-                    invoices = pd.read_sql("SELECT id, invoice_number FROM invoices ORDER BY issue_date DESC", conn)
-                    if invoices.empty:
-                        st.info("No invoices to delete")
-                    else:
-                        selected_inv = st.selectbox("Select Invoice to Delete", invoices['invoice_number'].tolist(), key="del_inv_select")
-                        inv_id = int(invoices[invoices['invoice_number'] == selected_inv]['id'].iloc[0])
-                        confirm = st.checkbox(f"Yes, permanently delete invoice {selected_inv}")
-                        if confirm and st.button("Confirm Delete", type="primary"):
-                            try:
-                                cur = conn.cursor()
-                                cur.execute("DELETE FROM invoices WHERE id = %s", (inv_id,))
-                                conn.commit()
-                                st.success(f"Invoice {selected_inv} deleted successfully")
-                                log_action("delete_invoice", f"Deleted invoice {selected_inv} (ID: {inv_id})", st.session_state.user['username'])
-                                safe_rerun()
-                            except Exception as e:
-                                st.error(f"Error deleting invoice: {str(e)}")
-                    conn.close()
+                                    st.error(f"Error deleting invoice: {str(e)}")
+                        conn.close()
 # --------------------------- 
 # User Settings 
 # --------------------------- 
