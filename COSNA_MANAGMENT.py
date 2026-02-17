@@ -102,14 +102,14 @@ def hash_password(password: str, salt: str = None):
 
 def verify_password(stored: str, provided: str):
     if '$' in stored:
-        # Modern salted hash
+        # Modern salted format
         try:
             salt, hashed = stored.split('$', 1)
             return hash_password(provided, salt) == stored
         except:
             return False
     else:
-        # Legacy / default admin - plain SHA256 no salt
+        # Plain SHA-256 (for your current admin user)
         return hashlib.sha256(provided.encode('utf-8')).hexdigest() == stored
 
 def generate_code(prefix="RCPT"):
