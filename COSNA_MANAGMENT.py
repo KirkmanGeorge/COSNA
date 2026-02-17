@@ -108,6 +108,25 @@ def safe_rerun():
             st.stop()
     except Exception:
         pass
+# Helper to safely convert any PostgreSQL date string to date object
+def safe_parse_date(value):
+    if value is None:
+        return date.today()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        # Remove time and timezone if present
+        cleaned = value.split(' ')[0].split('+')[0].split('T')[0]
+        try:
+            return safe_parse_date(cleaned)
+        except ValueError:
+            # Fallback - try parsing manually
+            try:
+                y, m, d = map(int, cleaned.split('-'))
+                return date(y, m, d)
+            except:
+                return date.today()  # or raise error - your choice
+    return date.today()  # default fallback
 # ---------------------------
 # DB migration helpers
 # ---------------------------
@@ -1037,7 +1056,7 @@ elif page == "Students":
                 with col1:
                     name = st.text_input("Full Name", value=student_row['name'])
                     age = st.number_input("Age", min_value=3, max_value=30, value=student_row['age'])
-                    enroll_date = st.date_input("Enrollment Date", value=date.fromisoformat(student_row['enrollment_date']))
+                    enroll_date = st.date_input("Enrollment Date", value=safe_parse_date(student_row['enrollment_date']))
                 with col2:
                     cls_df = pd.read_sql("SELECT id, name FROM classes ORDER BY name", conn)
                     cls_options = cls_df["name"].tolist() if not cls_df.empty else []
@@ -1473,7 +1492,7 @@ elif page == "Staff":
                                           index=0 if staff_row['staff_type'] == "Teaching" else 1)
                 with col2:
                     position = st.text_input("Position", value=staff_row['position'])
-                    hire_date = st.date_input("Hire Date", value=date.fromisoformat(staff_row['hire_date']))
+                    hire_date = st.date_input("Hire Date", value=safe_parse_date(staff_row['hire_date']))
 
                 submitted = st.form_submit_button("Update Staff")
                 if submitted:
@@ -2102,7 +2121,7 @@ elif page == "Finances":
 
                 categories = pd.read_sql("SELECT id, name FROM expense_categories WHERE category_type = 'Income' ORDER BY name", conn)
                 with st.form("edit_income_form"):
-                    date_in = st.date_input("Date", value=date.fromisoformat(inc_row['date']))
+                    date_in = st.date_input("Date", value=safe_parse_date(inc_row['date']))
                     receipt_no = st.text_input("Receipt Number", value=inc_row['receipt_number'])
                     amount = st.number_input("Amount (USh)", min_value=0.0, value=float(inc_row['amount']), step=100.0)
                     source = st.text_input("Source", value=inc_row['source'])
@@ -2197,7 +2216,7 @@ elif page == "Finances":
 
                 categories = pd.read_sql("SELECT id, name FROM expense_categories WHERE category_type = 'Expense' ORDER BY name", conn)
                 with st.form("edit_expense_form"):
-                    date_e = st.date_input("Date", value=date.fromisoformat(exp_row['date']))
+                    date_e = st.date_input("Date", value=safe_parse_date(exp_row['date']))
                     voucher_no = st.text_input("Voucher Number", value=exp_row['voucher_number'])
                     amount = st.number_input("Amount (USh)", min_value=0.0, value=float(exp_row['amount']), step=100.0)
                     current_cat_id = exp_row['category_id']
@@ -2355,8 +2374,8 @@ elif page == "Financial Report":
     )
 
     if view_mode == "Current Term" and st.session_state.selected_term:
-        default_start = date.fromisoformat(st.session_state.selected_term['start_date'])
-        default_end = date.fromisoformat(st.session_state.selected_term['end_date'])
+        default_start = safe_parse_date(st.session_state.selected_term['start_date'])
+        default_end = safe_parse_date(st.session_state.selected_term['end_date'])
     else:
         default_start = date.today().replace(day=1)
         default_end = date.today()
@@ -2520,8 +2539,8 @@ elif page == "Cashbook":
     conn = get_db_connection()
 
     if view_mode == "Current Term" and st.session_state.selected_term:
-        start_date = date.fromisoformat(st.session_state.selected_term['start_date'])
-        end_date = date.fromisoformat(st.session_state.selected_term['end_date'])
+        start_date = safe_parse_date(st.session_state.selected_term['start_date'])
+        end_date = safe_parse_date(st.session_state.selected_term['end_date'])
         st.info(f"Showing for selected term: {st.session_state.selected_term['term']} {st.session_state.selected_term['academic_year']}")
     else:
         start_date = st.date_input("Start Date", date.today().replace(day=1))
@@ -2872,8 +2891,8 @@ elif page == "Fee Management":
             inv_row = pd.read_sql("SELECT * FROM invoices WHERE invoice_number = %s", conn, params=(selected_inv,)).iloc[0]
 
             with st.form("edit_invoice_form"):
-                issue_date = st.date_input("Issue Date", value=date.fromisoformat(inv_row['issue_date']))
-                due_date = st.date_input("Due Date", value=date.fromisoformat(inv_row['due_date']))
+                issue_date = st.date_input("Issue Date", value=safe_parse_date(inv_row['issue_date']))
+                due_date = st.date_input("Due Date", value=safe_parse_date(inv_row['due_date']))
                 total_amount = st.number_input("Total Amount (USh)", min_value=0.0, value=float(inv_row['total_amount']), step=1000.0)
                 notes = st.text_area("Notes", value=inv_row['notes'] or "")
                 submit_edit = st.form_submit_button("Update Invoice")
