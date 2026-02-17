@@ -421,20 +421,18 @@ def initialize_database():
 
         # Seed default admin - FIXED with plain SHA-256 for "costa2026"
         with conn.cursor() as cur:
-            try:
-                cur.execute("SELECT COUNT(*) FROM users")
-                if cur.fetchone()[0] == 0:
-                    default_user = "admin"
-                    default_pass = "costa2026"
-                    hashed = hashlib.sha256(default_pass.encode('utf-8')).hexdigest()
-                    cur.execute(
-                        "INSERT INTO users (username, password_hash, role, full_name) "
-                        "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
-                        (default_user, hashed, "Admin", "Administrator")
-                    )
-                    conn.commit()
-            except:
-                pass
+            default_user = "admin"
+            default_pass = "costa2026"
+            hashed = hashlib.sha256(default_pass.encode('utf-8')).hexdigest()
+        
+            cur.execute("""
+                INSERT INTO users (username, password_hash, role, full_name)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (username)
+                DO UPDATE SET password_hash = EXCLUDED.password_hash
+            """, (default_user, hashed, "Admin", "Administrator"))
+        
+            conn.commit()
 
         # Seed uniform categories
         uniform_seeds = [
