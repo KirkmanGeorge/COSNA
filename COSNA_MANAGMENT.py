@@ -365,8 +365,12 @@ def initialize_database():
         if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
             default_user = "admin"
             default_pass = "costa2026"
-            conn.execute("INSERT OR IGNORE INTO users (username, password_hash, role, full_name) VALUES (%s, %s, %s, %s)",
-                        (default_user, hash_password(default_pass), "Admin", "Administrator"))
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO users (username, password_hash, role, full_name)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (username) DO NOTHING
+            """, (default_user, hash_password(default_pass), "Admin", "Administrator"))
             conn.commit()
     except:
         pass
