@@ -48,13 +48,14 @@ st.markdown("Students • Uniforms • Finances • Reports")
 # Utilities 
 # --------------------------- 
 def get_db_connection():
-    conn = psycopg2.connect(
+    return psycopg2.connect(
         host=st.secrets["DB_HOST"],
         port=st.secrets["DB_PORT"],
         dbname=st.secrets["DB_NAME"],
         user=st.secrets["DB_USER"],
         password=st.secrets["DB_PASSWORD"],
-        sslmode="require"
+        sslmode="require",
+        cursor_factory=DictCursor  # IMPORTANT
     )
     return conn
 def normalize_text(s: str):
