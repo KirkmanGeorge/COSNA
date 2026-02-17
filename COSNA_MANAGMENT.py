@@ -1,6 +1,12 @@
 """
-COSNA School Management System - PostgreSQL / Supabase version
-Final improved single-file application with persistent database
+COSNA School Management System - Final Fixed PostgreSQL / Supabase Version
+Full functional logic preserved, UI unchanged, all fixes applied:
+- PostgreSQL syntax
+- Safe date parsing
+- Context manager connections
+- Numpy type conversions for updates
+- Plain SHA-256 for admin password seeding and verification
+- Correct outstanding fees calculation and reflection
 """
 
 import streamlit as st
@@ -36,7 +42,7 @@ st.title(APP_TITLE)
 st.markdown("Students • Uniforms • Finances • Reports")
 
 # ────────────────────────────────────────────────
-# Connection context manager (short-lived, safe for Streamlit reruns)
+# Connection context manager
 # ────────────────────────────────────────────────
 @contextlib.contextmanager
 def db_connection():
@@ -55,7 +61,7 @@ def db_connection():
             conn.close()
 
 # ────────────────────────────────────────────────
-# Safe date parser for PostgreSQL date strings
+# Safe date parser
 # ────────────────────────────────────────────────
 def safe_parse_date(value):
     if value is None:
@@ -101,24 +107,15 @@ def hash_password(password: str, salt: str = None):
     return f"{salt}${hashed}"
 
 def verify_password(stored: str, provided: str):
-    # Debug - show what we're comparing
-    print(f"DEBUG verify_password - Stored: '{stored}'")
-    print(f"DEBUG verify_password - Provided: '{provided}'")
-
     if '$' in stored:
         try:
             salt, hashed = stored.split('$', 1)
-            computed = hash_password(provided, salt)
-            print(f"DEBUG - Salted compare: {computed} == {stored}")
-            return computed == stored
+            return hash_password(provided, salt) == stored
         except:
-            print("DEBUG - Split failed")
             return False
     else:
-        # Plain SHA-256 for your admin
-        computed_plain = hashlib.sha256(provided.encode('utf-8')).hexdigest()
-        print(f"DEBUG - Plain compare: {computed_plain} == {stored}")
-        return computed_plain == stored
+        # Plain SHA-256 for legacy/default admin
+        return hashlib.sha256(provided.encode('utf-8')).hexdigest() == stored
 
 def generate_code(prefix="RCPT"):
     day = datetime.now().strftime("%d")
@@ -126,7 +123,7 @@ def generate_code(prefix="RCPT"):
     return f"{prefix}-{day}{random_chars}"
 
 def generate_receipt_number(): return generate_code("RCPT")
-def generate_invoice_number(): return generate_code("INV")
+def generate_invoice_number(): generate_code("INV")
 def generate_voucher_number(): return generate_code("VCH")
 
 def safe_rerun():
@@ -164,12 +161,11 @@ def safe_alter_add_column(conn, table, column_def):
     return False
 
 # ────────────────────────────────────────────────
-# Initialize DB and seed (full version - no omissions)
+# Initialize DB and seed
 # ────────────────────────────────────────────────
 def initialize_database():
     with db_connection() as conn:
         with conn.cursor() as cursor:
-            # Core tables - PostgreSQL syntax
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     id SERIAL PRIMARY KEY,
@@ -363,7 +359,7 @@ def initialize_database():
             ''')
             conn.commit()
 
-        # Safe migrations (add missing columns if needed)
+        # Safe migrations
         safe_alter_add_column(conn, "incomes", "created_by TEXT")
         safe_alter_add_column(conn, "incomes", "received_by TEXT")
         safe_alter_add_column(conn, "incomes", "description TEXT")
@@ -384,8 +380,7 @@ def initialize_database():
                 rows = cur.fetchall()
                 for r in rows:
                     if (r[2] is None or r[2] == "") and r[1]:
-                        cur.execute("UPDATE uniform_categories SET normalized_category = %s WHERE id = %s",
-                                    (normalize_text(r[1]), r[0]))
+                        cur.execute("UPDATE uniform_categories SET normalized_category = %s WHERE id = %s", (normalize_text(r[1]), r[0]))
                 conn.commit()
             except:
                 pass
@@ -395,8 +390,7 @@ def initialize_database():
                 rows = cur.fetchall()
                 for r in rows:
                     if (r[2] is None or r[2] == "") and r[1]:
-                        cur.execute("UPDATE students SET normalized_name = %s WHERE id = %s",
-                                    (normalize_text(r[1]), r[0]))
+                        cur.execute("UPDATE students SET normalized_name = %s WHERE id = %s", (normalize_text(r[1]), r[0]))
                 conn.commit()
             except:
                 pass
@@ -406,13 +400,12 @@ def initialize_database():
                 rows = cur.fetchall()
                 for r in rows:
                     if (r[2] is None or r[2] == "") and r[1]:
-                        cur.execute("UPDATE staff SET normalized_name = %s WHERE id = %s",
-                                    (normalize_text(r[1]), r[0]))
+                        cur.execute("UPDATE staff SET normalized_name = %s WHERE id = %s", (normalize_text(r[1]), r[0]))
                 conn.commit()
             except:
                 pass
 
-        # Ensure uniforms rows exist
+        # Ensure uniforms rows
         with conn.cursor() as cur:
             try:
                 cur.execute("SELECT id FROM uniform_categories")
@@ -425,27 +418,23 @@ def initialize_database():
                 conn.commit()
             except:
                 pass
-        # Seed default admin - FIXED: use plain SHA256 without random salt for default
+
+        # Seed default admin - FIXED with plain SHA-256 for "costa2026"
         with conn.cursor() as cur:
             try:
                 cur.execute("SELECT COUNT(*) FROM users")
                 if cur.fetchone()[0] == 0:
                     default_user = "admin"
                     default_pass = "costa2026"
-                    # Plain SHA256 - no salt - so verify_password can handle it
                     hashed = hashlib.sha256(default_pass.encode('utf-8')).hexdigest()
-                    print(f"DEBUG: Seeding admin with plain hash: {hashed}")  # optional - remove later
-                    
                     cur.execute(
                         "INSERT INTO users (username, password_hash, role, full_name) "
                         "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
                         (default_user, hashed, "Admin", "Administrator")
                     )
                     conn.commit()
-                    print("DEBUG: Admin seeded successfully (no-salt hash)")
-            except Exception as e:
-                print(f"DEBUG: Admin seeding failed: {str(e)}")
-        
+            except:
+                pass
 
         # Seed uniform categories
         uniform_seeds = [
@@ -505,7 +494,6 @@ def initialize_database():
             except:
                 pass
 
-# Run initialization once when the script loads
 initialize_database()
 # ────────────────────────────────────────────────
 # Audit logging
@@ -520,7 +508,7 @@ def log_action(action, details="", performed_by="system"):
                 )
             conn.commit()
     except Exception:
-        pass  # silent fail, same as original
+        pass
 
 
 # ────────────────────────────────────────────────
@@ -533,14 +521,14 @@ def get_user(username):
                 cur.execute("SELECT * FROM users WHERE username = %s", (username,))
                 row = cur.fetchone()
                 if row:
-                    print(f"DEBUG get_user - Found row: {dict(row)}")
                     return dict(row)
-                else:
-                    print(f"DEBUG get_user - No user found for '{username}'")
-                    return None
-    except Exception as e:
-        print(f"DEBUG get_user - Error: {str(e)}")
+                return None
+    except Exception:
         return None
+
+
+if 'user' not in st.session_state:
+    st.session_state.user = None
 
 
 # ────────────────────────────────────────────────
@@ -560,7 +548,7 @@ def save_uploaded_logo(uploaded_file):
 
 
 # ────────────────────────────────────────────────
-# Export helpers (Excel & PDF landscape) - unchanged logic
+# Export helpers (Excel & PDF landscape)
 # ────────────────────────────────────────────────
 def df_to_excel_bytes(df: pd.DataFrame, sheet_name="Sheet1"):
     buf = BytesIO()
@@ -693,7 +681,7 @@ def require_role(allowed_roles):
 
 
 # ────────────────────────────────────────────────
-# Login page (isolated)
+# Login page
 # ────────────────────────────────────────────────
 def show_login_page():
     st.markdown("### Login")
@@ -715,7 +703,7 @@ def show_login_page():
                     st.error("Enter username and password")
                 else:
                     user = get_user(username)
-                    if user and verify_password(user["password_hash"], password):
+                    if user and verify_password(user.get("password_hash", ""), password):
                         st.session_state.user = {
                             "id": user["id"],
                             "username": username,
@@ -728,7 +716,6 @@ def show_login_page():
                         st.error("Invalid credentials")
 
 
-# If not logged in → show only login
 if not st.session_state.user:
     show_login_page()
     st.stop()
@@ -952,7 +939,7 @@ elif page == "Students":
         ["View & Export", "Add Student", "Edit Student", "Delete Student", "Student Fees"]
     )
 
-    # ── View & Export ──
+    # View & Export
     with tab_view:
         try:
             with db_connection() as conn:
@@ -996,7 +983,7 @@ elif page == "Students":
         except Exception:
             st.info("No student records yet or error loading data")
 
-    # ── Add Student ──
+    # Add Student
     with tab_add:
         st.subheader("Add Student")
         with st.expander("Add a new class (if not in list)", expanded=False):
@@ -1096,7 +1083,7 @@ elif page == "Students":
                     except Exception as e:
                         st.error(f"Error adding student: {e}")
 
-    # ── Edit Student ──
+    # Edit Student
     with tab_edit:
         st.subheader("Edit Student")
         try:
@@ -1210,7 +1197,7 @@ elif page == "Students":
                             except Exception as e:
                                 st.error(f"Error updating student: {e}")
 
-    # ── Delete Student ──
+    # Delete Student
     with tab_delete:
         require_role(["Admin"])
         st.subheader("Delete Student")
@@ -1256,7 +1243,7 @@ elif page == "Students":
                         else:
                             st.error(f"Error deleting student: {e}")
 
-    # ── Student Fees ──
+    # Student Fees
     with tab_fees:
         st.subheader("Outstanding Fees Breakdown")
 
@@ -1455,12 +1442,13 @@ elif page == "Students":
                                             conn.rollback()
                                             st.error("Invoice not found")
                                         else:
-                                            current_balance = inv_check[1] if inv_check[1] is not None else inv_check[2]
+                                            paid_amount = float(inv_check[0]) if inv_check[0] is not None else 0.0
+                                            current_balance = float(inv_check[1]) if inv_check[1] is not None else float(inv_check[2])
                                             if pay_amount > current_balance + 0.0001:
                                                 conn.rollback()
                                                 st.error("Payment exceeds current balance. Refresh and try again.")
                                             else:
-                                                new_paid = (inv_check[0] or 0) + pay_amount
+                                                new_paid = paid_amount + pay_amount
                                                 new_balance = current_balance - pay_amount
                                                 new_status = 'Fully Paid' if new_balance <= 0 else 'Partially Paid'
                                                 cur.execute(
@@ -1492,7 +1480,7 @@ elif page == "Students":
                             except Exception as e:
                                 if 'conn' in locals():
                                     conn.rollback()
-                                st.error(f"Error recording payment: {e}")
+                                st.error(f"Error recording payment: {str(e)}")
                             finally:
                                 if 'conn' in locals():
                                     conn.autocommit = True
@@ -1548,7 +1536,7 @@ elif page == "Staff":
         ["View & Export", "Add Staff", "Edit Staff", "Delete Staff", "Staff Transactions"]
     )
 
-    # ── View & Export ──
+    # View & Export
     with tab_view:
         staff_types = ["All Types", "Teaching", "Non-Teaching"]
         selected_type = st.selectbox("Filter by Staff Type", staff_types)
@@ -1577,7 +1565,7 @@ elif page == "Staff":
         except Exception:
             st.info("No staff records yet or error loading data")
 
-    # ── Add Staff ──
+    # Add Staff
     with tab_add:
         st.subheader("Add Staff")
         with st.form("add_staff_form"):
@@ -1616,7 +1604,7 @@ elif page == "Staff":
                     except Exception as e:
                         st.error(f"Error adding staff: {e}")
 
-    # ── Edit Staff ──
+    # Edit Staff
     with tab_edit:
         st.subheader("Edit Staff")
         try:
@@ -1682,7 +1670,7 @@ elif page == "Staff":
                             except Exception as e:
                                 st.error(f"Error updating staff: {e}")
 
-    # ── Delete Staff ──
+    # Delete Staff
     with tab_delete:
         require_role(["Admin"])
         st.subheader("Delete Staff")
@@ -1720,7 +1708,7 @@ elif page == "Staff":
                         else:
                             st.error(f"Error deleting staff: {e}")
 
-    # ── Staff Transactions ──
+    # Staff Transactions
     with tab_trans:
         st.subheader("Staff Transactions")
 
@@ -1792,14 +1780,14 @@ elif page == "Staff":
                                         INSERT INTO staff_transactions (staff_id, date, transaction_type, amount, description,
                                                                         payment_method, voucher_number, approved_by, created_by)
                                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                    """, (staff_id, trans_date.isoformat(), trans_type, amount, description,
+                                    """, (staff_id, trans_date.isoformat(), trans_type, float(amount), description,
                                           pay_method, voucher_no, approved_by, st.session_state.user['username']))
 
                                     cur.execute("""
                                         INSERT INTO expenses (date, voucher_number, amount, category_id, description,
                                                               payment_method, payee, approved_by, created_by)
                                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                    """, (trans_date.isoformat(), voucher_no, amount, cat_id,
+                                    """, (trans_date.isoformat(), voucher_no, float(amount), cat_id,
                                           f"{trans_type} for {staff_name}: {description}", pay_method,
                                           staff_name, approved_by, st.session_state.user['username']))
 
@@ -1996,7 +1984,7 @@ elif page == "Uniforms":
                                         INSERT INTO incomes (date, receipt_number, amount, source, category_id, description,
                                                              payment_method, payer, received_by, created_by)
                                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                    """, (date.today().isoformat(), receipt_no, amount, "Uniform Sales", cat_id_income,
+                                    """, (date.today().isoformat(), receipt_no, float(amount), "Uniform Sales", cat_id_income,
                                           f"Sale of {qty} x {selected} - {notes}", payment_method, buyer or "Walk-in",
                                           st.session_state.user['username'], st.session_state.user['username']))
 
@@ -2194,7 +2182,7 @@ elif page == "Finances":
                                         INSERT INTO incomes (date, receipt_number, amount, source, category_id, description,
                                                              payment_method, payer, received_by, created_by)
                                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                    """, (date_in.isoformat(), receipt_no, amount, source, cat_id, description,
+                                    """, (date_in.isoformat(), receipt_no, float(amount), source, cat_id, description,
                                           payment_method, payer, st.session_state.user['username'], st.session_state.user['username']))
                                 conn.commit()
                             st.success("Income recorded")
@@ -2248,7 +2236,7 @@ elif page == "Finances":
                                         INSERT INTO expenses (date, voucher_number, amount, category_id, description,
                                                               payment_method, payee, approved_by, created_by)
                                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                    """, (date_e.isoformat(), voucher_no, amount, cat_id, description,
+                                    """, (date_e.isoformat(), voucher_no, float(amount), cat_id, description,
                                           payment_method, payee, approved_by, st.session_state.user['username']))
                                 conn.commit()
                             st.success("Expense recorded")
@@ -2380,8 +2368,8 @@ elif page == "Finances":
                                             SET date = %s, receipt_number = %s, amount = %s, source = %s,
                                                 category_id = %s, description = %s, payment_method = %s, payer = %s
                                             WHERE id = %s
-                                        """, (date_in.isoformat(), receipt_no, amount, source, cat_id,
-                                              description, payment_method, payer, inc_id))
+                                        """, (date_in.isoformat(), receipt_no, float(amount), source, cat_id,
+                                              description, payment_method, payer, int(inc_id)))
                                     conn.commit()
                                 st.success("Income updated")
                                 log_action("edit_income", f"Updated income ID {inc_id} receipt {receipt_no}", st.session_state.user['username'])
@@ -2489,8 +2477,8 @@ elif page == "Finances":
                                             SET date = %s, voucher_number = %s, amount = %s, category_id = %s,
                                                 description = %s, payment_method = %s, payee = %s, approved_by = %s
                                             WHERE id = %s
-                                        """, (date_e.isoformat(), voucher_no, amount, cat_id,
-                                              description, payment_method, payee, approved_by, exp_id))
+                                        """, (date_e.isoformat(), voucher_no, float(amount), cat_id,
+                                              description, payment_method, payee, approved_by, int(exp_id)))
                                     conn.commit()
                                 st.success("Expense updated")
                                 log_action("edit_expense", f"Updated expense ID {exp_id} voucher {voucher_no}", st.session_state.user['username'])
@@ -2568,7 +2556,7 @@ elif page == "Finances":
                                         INSERT INTO expenses (date, voucher_number, amount, category_id, description,
                                                               payment_method, payee, approved_by, created_by)
                                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                    """, (transfer_date.isoformat(), voucher_no, amount, transfer_out_id,
+                                    """, (transfer_date.isoformat(), voucher_no, float(amount), transfer_out_id,
                                           f"Transfer to {to_account}: {description}", pay_method_from,
                                           to_account, st.session_state.user['username'], st.session_state.user['username']))
 
@@ -2578,7 +2566,7 @@ elif page == "Finances":
                                         INSERT INTO incomes (date, receipt_number, amount, source, category_id, description,
                                                              payment_method, payer, received_by, created_by)
                                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                    """, (transfer_date.isoformat(), receipt_no, amount, f"Transfer from {from_account}",
+                                    """, (transfer_date.isoformat(), receipt_no, float(amount), f"Transfer from {from_account}",
                                           transfer_in_id, f"Transfer from {from_account}: {description}", pay_method_to,
                                           from_account, st.session_state.user['username'], st.session_state.user['username']))
 
@@ -2656,8 +2644,8 @@ elif page == "Financial Report":
                             st.subheader("Expenses")
                             st.dataframe(df_exp, use_container_width=True)
 
-                            total_inc = df_inc['Amount'].sum() if not df_inc.empty else 0
-                            total_exp = df_exp['Amount'].sum() if not df_exp.empty else 0
+                            total_inc = df_inc['Amount'].sum() if not df_inc.empty else 0.0
+                            total_exp = df_exp['Amount'].sum() if not df_exp.empty else 0.0
                             st.metric("Total Income", f"USh {total_inc:,.0f}")
                             st.metric("Total Expense", f"USh {total_exp:,.0f}")
 
@@ -2712,7 +2700,11 @@ elif page == "Financial Report":
                             download_options(df, filename_base="outstanding_invoices", title="Outstanding Invoices")
 
                     else:  # Student Payment Summary
-                        students = pd.read_sql("SELECT id, name FROM students ORDER BY name", conn)
+                        try:
+                            students = pd.read_sql("SELECT id, name FROM students ORDER BY name", conn)
+                        except:
+                            students = pd.DataFrame()
+
                         if students.empty:
                             st.info("No students available")
                         else:
@@ -2823,14 +2815,14 @@ elif page == "Cashbook":
                     is_cash = row['payment_method'] in ['Cash', 'Mobile Money']
                     if row['type'] == 'Income':
                         if is_cash:
-                            combined.at[idx, 'cash_dr'] = row['amount']
+                            combined.at[idx, 'cash_dr'] = float(row['amount'])
                         else:
-                            combined.at[idx, 'bank_dr'] = row['amount']
+                            combined.at[idx, 'bank_dr'] = float(row['amount'])
                     else:
                         if is_cash:
-                            combined.at[idx, 'cash_cr'] = row['amount']
+                            combined.at[idx, 'cash_cr'] = float(row['amount'])
                         else:
-                            combined.at[idx, 'bank_cr'] = row['amount']
+                            combined.at[idx, 'bank_cr'] = float(row['amount'])
 
                 combined['cash_balance'] = (combined['cash_dr'] - combined['cash_cr']).cumsum()
                 combined['bank_balance'] = (combined['bank_dr'] - combined['bank_cr']).cumsum()
@@ -2993,15 +2985,17 @@ elif page == "Fee Management":
                                         exam_fee = %s, library_fee = %s, other_fee = %s,
                                         total_fee = %s, created_at = CURRENT_TIMESTAMP
                                     WHERE id = %s
-                                """, (tuition_fee, uniform_fee, activity_fee, exam_fee, library_fee, other_fee,
-                                      total_fee, existing[0]))
+                                """, (float(tuition_fee), float(uniform_fee), float(activity_fee),
+                                      float(exam_fee), float(library_fee), float(other_fee),
+                                      float(total_fee), existing[0]))
                             else:
                                 cur.execute("""
                                     INSERT INTO fee_structure (class_id, term, academic_year, tuition_fee, uniform_fee,
                                                                activity_fee, exam_fee, library_fee, other_fee, total_fee)
                                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                """, (cls_id, term, academic_year, tuition_fee, uniform_fee, activity_fee,
-                                      exam_fee, library_fee, other_fee, total_fee))
+                                """, (cls_id, term, academic_year, float(tuition_fee), float(uniform_fee),
+                                      float(activity_fee), float(exam_fee), float(library_fee), float(other_fee),
+                                      float(total_fee)))
                             conn.commit()
                     st.success("Fee structure saved successfully")
                     log_action("fee_structure_update" if existing else "fee_structure_create",
@@ -3141,8 +3135,11 @@ elif page == "Fee Management":
 
                     if submit_edit:
                         try:
-                            new_balance = total_amount - float(inv_row['paid_amount'] or 0)
-                            new_status = 'Fully Paid' if new_balance <= 0 else 'Partially Paid' if inv_row['paid_amount'] > 0 else 'Pending'
+                            paid_amount = float(inv_row['paid_amount']) if pd.notna(inv_row['paid_amount']) else 0.0
+                            new_balance = float(total_amount) - paid_amount
+                            new_status = 'Fully Paid' if new_balance <= 0 else 'Partially Paid' if paid_amount > 0 else 'Pending'
+                            invoice_id = int(inv_row['id'])
+
                             with db_connection() as conn:
                                 with conn.cursor() as cur:
                                     cur.execute("""
@@ -3150,8 +3147,8 @@ elif page == "Fee Management":
                                         SET issue_date = %s, due_date = %s, total_amount = %s,
                                             balance_amount = %s, status = %s, notes = %s
                                         WHERE id = %s
-                                    """, (issue_date.isoformat(), due_date.isoformat(), total_amount,
-                                          new_balance, new_status, notes, inv_row['id']))
+                                    """, (issue_date.isoformat(), due_date.isoformat(), float(total_amount),
+                                          float(new_balance), new_status, notes or None, invoice_id))
                                 conn.commit()
                             st.success("Invoice updated successfully")
                             log_action("edit_invoice", f"Updated invoice {selected_inv} to {total_amount}", st.session_state.user['username'])
@@ -3200,7 +3197,7 @@ elif page == "User Settings":
     try:
         with db_connection() as conn:
             user = st.session_state.user
-            user_id = user["id"]
+            user_id = int(user["id"])
             current_username = user["username"]
             current_full_name = user.get("full_name", current_username)
     except Exception:
