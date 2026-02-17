@@ -101,16 +101,24 @@ def hash_password(password: str, salt: str = None):
     return f"{salt}${hashed}"
 
 def verify_password(stored: str, provided: str):
+    # Debug - show what we're comparing
+    print(f"DEBUG verify_password - Stored: '{stored}'")
+    print(f"DEBUG verify_password - Provided: '{provided}'")
+
     if '$' in stored:
-        # Modern salted format
         try:
             salt, hashed = stored.split('$', 1)
-            return hash_password(provided, salt) == stored
+            computed = hash_password(provided, salt)
+            print(f"DEBUG - Salted compare: {computed} == {stored}")
+            return computed == stored
         except:
+            print("DEBUG - Split failed")
             return False
     else:
-        # Plain SHA-256 (for your current admin user)
-        return hashlib.sha256(provided.encode('utf-8')).hexdigest() == stored
+        # Plain SHA-256 for your admin
+        computed_plain = hashlib.sha256(provided.encode('utf-8')).hexdigest()
+        print(f"DEBUG - Plain compare: {computed_plain} == {stored}")
+        return computed_plain == stored
 
 def generate_code(prefix="RCPT"):
     day = datetime.now().strftime("%d")
@@ -524,13 +532,15 @@ def get_user(username):
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
                 cur.execute("SELECT * FROM users WHERE username = %s", (username,))
                 row = cur.fetchone()
-                return dict(row) if row else None
-    except Exception:
+                if row:
+                    print(f"DEBUG get_user - Found row: {dict(row)}")
+                    return dict(row)
+                else:
+                    print(f"DEBUG get_user - No user found for '{username}'")
+                    return None
+    except Exception as e:
+        print(f"DEBUG get_user - Error: {str(e)}")
         return None
-
-
-if 'user' not in st.session_state:
-    st.session_state.user = None
 
 
 # ────────────────────────────────────────────────
