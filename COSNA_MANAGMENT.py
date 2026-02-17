@@ -2216,29 +2216,29 @@ elif page == "Fee Management":
                                     except Exception as e:
                                         st.error(f"Error updating invoice: {str(e)}")
                         conn.close()
-                        with tab_delete_inv:
-                        require_role(["Admin"])
-                        st.subheader("Delete Invoice")
-                        st.warning("This action is permanent and cannot be undone. Related payments will remain in the system.")
-                        conn = get_db_connection()
-                        invoices = pd.read_sql("SELECT id, invoice_number FROM invoices ORDER BY issue_date DESC", conn)
-                        if invoices.empty:
-                            st.info("No invoices to delete")
-                        else:
-                            selected_inv = st.selectbox("Select Invoice to Delete", invoices['invoice_number'].tolist(), key="del_inv_select")
-                            inv_id = int(invoices[invoices['invoice_number'] == selected_inv]['id'].iloc[0])
-                            confirm = st.checkbox(f"Yes, permanently delete invoice {selected_inv}")
-                            if confirm and st.button("Confirm Delete", type="primary"):
-                                try:
-                                    cur = conn.cursor()
-                                    cur.execute("DELETE FROM invoices WHERE id = %s", (inv_id,))
-                                    conn.commit()
-                                    st.success(f"Invoice {selected_inv} deleted successfully")
-                                    log_action("delete_invoice", f"Deleted invoice {selected_inv} (ID: {inv_id})", st.session_state.user['username'])
-                                    safe_rerun()
-                                except Exception as e:
-                                    st.error(f"Error deleting invoice: {str(e)}")
-                        conn.close()
+                            with tab_delete_inv:
+                            require_role(["Admin"])
+                            st.subheader("Delete Invoice")
+                            st.warning("This action is permanent and cannot be undone. Related payments will remain in the system.")
+                            conn = get_db_connection()
+                            invoices = pd.read_sql("SELECT id, invoice_number FROM invoices ORDER BY issue_date DESC", conn)
+                            if invoices.empty:
+                                st.info("No invoices to delete")
+                            else:
+                                selected_inv = st.selectbox("Select Invoice to Delete", invoices['invoice_number'].tolist(), key="del_inv_select")
+                                inv_id = int(invoices[invoices['invoice_number'] == selected_inv]['id'].iloc[0])
+                                confirm = st.checkbox(f"Yes, permanently delete invoice {selected_inv}")
+                                if confirm and st.button("Confirm Delete", type="primary"):
+                                    try:
+                                        cur = conn.cursor()
+                                        cur.execute("DELETE FROM invoices WHERE id = %s", (inv_id,))
+                                        conn.commit()
+                                        st.success(f"Invoice {selected_inv} deleted successfully")
+                                        log_action("delete_invoice", f"Deleted invoice {selected_inv} (ID: {inv_id})", st.session_state.user['username'])
+                                        safe_rerun()
+                                    except Exception as e:
+                                        st.error(f"Error deleting invoice: {str(e)}")
+                            conn.close()
 # --------------------------- 
 # User Settings 
 # --------------------------- 
