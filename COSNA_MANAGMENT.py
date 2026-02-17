@@ -101,11 +101,16 @@ def hash_password(password: str, salt: str = None):
     return f"{salt}${hashed}"
 
 def verify_password(stored: str, provided: str):
-    try:
-        salt, _ = stored.split('$', 1)
-    except Exception:
-        return False
-    return hash_password(provided, salt) == stored
+    if '$' in stored:
+        # Modern salted hash
+        try:
+            salt, hashed = stored.split('$', 1)
+            return hash_password(provided, salt) == stored
+        except:
+            return False
+    else:
+        # Legacy / default admin - plain SHA256 no salt
+        return hashlib.sha256(provided.encode('utf-8')).hexdigest() == stored
 
 def generate_code(prefix="RCPT"):
     day = datetime.now().strftime("%d")
@@ -412,22 +417,27 @@ def initialize_database():
                 conn.commit()
             except:
                 pass
-
-        # Seed default admin
+        # Seed default admin - FIXED: use plain SHA256 without random salt for default
         with conn.cursor() as cur:
             try:
                 cur.execute("SELECT COUNT(*) FROM users")
                 if cur.fetchone()[0] == 0:
                     default_user = "admin"
                     default_pass = "costa2026"
+                    # Plain SHA256 - no salt - so verify_password can handle it
+                    hashed = hashlib.sha256(default_pass.encode('utf-8')).hexdigest()
+                    print(f"DEBUG: Seeding admin with plain hash: {hashed}")  # optional - remove later
+                    
                     cur.execute(
                         "INSERT INTO users (username, password_hash, role, full_name) "
                         "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
-                        (default_user, hash_password(default_pass), "Admin", "Administrator")
+                        (default_user, hashed, "Admin", "Administrator")
                     )
                     conn.commit()
-            except:
-                pass
+                    print("DEBUG: Admin seeded successfully (no-salt hash)")
+            except Exception as e:
+                print(f"DEBUG: Admin seeding failed: {str(e)}")
+        
 
         # Seed uniform categories
         uniform_seeds = [
