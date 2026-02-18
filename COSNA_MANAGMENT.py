@@ -1811,9 +1811,7 @@ elif page == "Staff":
                                 st.error("Voucher number already exists")
                             else:
                                 st.error(f"Error recording transaction: {e}")
-                        finally:
-                            if 'conn' in locals():
-                                conn.autocommit = True
+                                
 
             st.subheader("Staff Ledger")
             try:
