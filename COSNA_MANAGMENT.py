@@ -858,9 +858,9 @@ if page == "Dashboard":
             with db_connection() as conn:
                 df_inc = pd.read_sql(
                     f"""
-                    SELECT date as Date, receipt_number as "Receipt No", amount as Amount,
-                           source as Source, payment_method as "Payment Method",
-                           payer as Payer, description as Description
+                    SELECT date as "Date", receipt_number as "Receipt No", amount as "Amount",
+                           source as "Source", payment_method as "Payment Method",
+                           payer as "Payer", description as "Description"
                     FROM incomes {inc_where}
                     ORDER BY date DESC LIMIT 5
                     """,
