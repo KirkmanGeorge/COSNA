@@ -1500,7 +1500,7 @@ elif page == "Students":
                     ledger_df = pd.read_sql(f"""
                         SELECT 
                             'Invoice' AS Type, 
-                            issue_date AS Date, 
+                            issue_date AS "Date", 
                             invoice_number AS Reference, 
                             total_amount AS Debit, 
                             0 AS Credit
@@ -1519,7 +1519,7 @@ elif page == "Students":
                         JOIN invoices i ON p.invoice_id = i.id 
                         WHERE i.student_id = %s
                         
-                        ORDER BY Date ASC
+                        ORDER BY "Date" ASC
                     """, conn, params=(student_id, student_id))
 
                 if ledger_df.empty:
@@ -1820,11 +1820,11 @@ elif page == "Staff":
                 with db_connection() as conn:
                     ledger_df = pd.read_sql(
                         """
-                        SELECT date as Date, transaction_type as Type, amount as Debit,
+                        SELECT date as "Date", transaction_type as Type, amount as Debit,
                                description as Description, voucher_number as "Voucher No"
                         FROM staff_transactions
                         WHERE staff_id = %s
-                        ORDER BY date
+                        ORDER BY "date"
                         """,
                         conn, params=(staff_id,)
                     )
