@@ -11,6 +11,7 @@ Full functional logic preserved, UI unchanged, all fixes applied:
 
 import streamlit as st
 import psycopg2
+import psycopg2.extras
 import pandas as pd
 from datetime import datetime, date
 from io import BytesIO
