@@ -1500,7 +1500,7 @@ elif page == "Students":
                     ledger_df = pd.read_sql(f"""
                         SELECT 
                             'Invoice' AS Type, 
-                            invoice_date AS Date, 
+                            issue_date AS Date, 
                             invoice_number AS Reference, 
                             total_amount AS Debit, 
                             0 AS Credit
