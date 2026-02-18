@@ -3161,7 +3161,7 @@ elif page == "Fee Management":
                         except Exception as e:
                             st.error(f"Error updating invoice: {str(e)}")
 
-    with tab_delete_inv:
+   with tab_delete_inv:
         require_role(["Admin"])
         st.subheader("Delete Invoice")
         st.warning("This action is permanent and cannot be undone. Related payments will remain in the system.")
@@ -3175,21 +3175,29 @@ elif page == "Fee Management":
         if invoices.empty:
             st.info("No invoices to delete")
         else:
-            selected_inv = st.selectbox("Select Invoice to Delete", invoices['invoice_number'].tolist(), key="del_inv_select")
-            inv_id = int(invoices[invoices['invoice_number'] == selected_inv]['id'].iloc[0])
+            invoice_numbers = invoices['invoice_number'].tolist()
+            selected_inv = st.selectbox("Select Invoice to Delete", invoice_numbers, key="del_inv_select")
 
-            confirm = st.checkbox(f"Yes, permanently delete invoice {selected_inv}")
-            if confirm and st.button("Confirm Delete", type="primary"):
-                try:
-                    with db_connection() as conn:
-                        with conn.cursor() as cur:
-                            cur.execute("DELETE FROM invoices WHERE id = %s", (inv_id,))
-                        conn.commit()
-                    st.success(f"Invoice {selected_inv} deleted successfully")
-                    log_action("delete_invoice", f"Deleted invoice {selected_inv} (ID: {inv_id})", st.session_state.user['username'])
-                    safe_rerun()
-                except Exception as e:
-                    st.error(f"Error deleting invoice: {str(e)}")
+            # Safe lookup - use .loc instead of chained filtering + iloc
+            filtered = invoices.loc[invoices['invoice_number'] == selected_inv]
+
+            if filtered.empty:
+                st.warning(f"Invoice '{selected_inv}' no longer exists (may have been deleted already). Refresh the page.")
+            else:
+                inv_id = int(filtered['id'].iloc[0])
+
+                confirm = st.checkbox(f"Yes, permanently delete invoice {selected_inv}")
+                if confirm and st.button("Confirm Delete", type="primary"):
+                    try:
+                        with db_connection() as conn:
+                            with conn.cursor() as cur:
+                                cur.execute("DELETE FROM invoices WHERE id = %s", (inv_id,))
+                            conn.commit()
+                        st.success(f"Invoice {selected_inv} deleted successfully")
+                        log_action("delete_invoice", f"Deleted invoice {selected_inv} (ID: {inv_id})", st.session_state.user['username'])
+                        safe_rerun()
+                    except Exception as e:
+                        st.error(f"Error deleting invoice: {str(e)}")
 
 
 # ────────────────────────────────────────────────
