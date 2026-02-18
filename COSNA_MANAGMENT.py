@@ -3104,12 +3104,13 @@ elif page == "Fee Management":
 
     with tab_edit_inv:
         st.subheader("Edit Invoice")
+
+        # Load list of invoices for dropdown
         try:
             with db_connection() as conn:
-                invoices = pd.read_sql(
+                invoices_list = pd.read_sql(
                     """
-                    SELECT i.id, i.invoice_number, s.name as student_name,
-                           i.total_amount, i.paid_amount, i.balance_amount
+                    SELECT i.id, i.invoice_number, s.name as student_name
                     FROM invoices i
                     JOIN students s ON i.student_id = s.id
                     ORDER BY i.issue_date DESC
@@ -3117,32 +3118,48 @@ elif page == "Fee Management":
                     conn
                 )
         except Exception:
-            invoices = pd.DataFrame()
+            invoices_list = pd.DataFrame()
 
-        if invoices.empty:
+        if invoices_list.empty:
             st.info("No invoices available to edit")
         else:
-            invoice_numbers = invoices['invoice_number'].tolist()
-            selected_inv = st.selectbox("Select Invoice", invoice_numbers, key="edit_inv_select")
+            # Use invoice_number + student name for better UX in dropdown
+            display_options = invoices_list.apply(
+                lambda x: f"{x['invoice_number']} - {x['student_name']}", axis=1
+            ).tolist()
 
-            # Safe lookup
-            filtered = invoices[invoices['invoice_number'] == selected_inv]
-            if filtered.empty:
-                st.warning(f"Invoice '{selected_inv}' no longer exists or could not be loaded. Refresh the page.")
+            selected_display = st.selectbox("Select Invoice", display_options, key="edit_inv_select")
+
+            # Extract selected invoice_number from display string
+            selected_inv = selected_display.split(" - ")[0]
+
+            # Now safely load full row for editing
+            try:
+                with db_connection() as conn:
+                    inv_row_df = pd.read_sql(
+                        "SELECT * FROM invoices WHERE invoice_number = %s",
+                        conn,
+                        params=(selected_inv,)
+                    )
+                    if inv_row_df.empty:
+                        st.warning(f"Invoice '{selected_inv}' could not be found or was deleted. Refresh the page.")
+                        inv_row = None
+                    else:
+                        inv_row = inv_row_df.iloc[0]
+            except Exception as e:
+                st.error(f"Could not load invoice details: {str(e)}")
                 inv_row = None
-            else:
-                try:
-                    with db_connection() as conn:
-                        inv_row = pd.read_sql("SELECT * FROM invoices WHERE invoice_number = %s", conn, params=(selected_inv,)).iloc[0]
-                except Exception:
-                    st.error("Could not load invoice details")
-                    inv_row = None
 
             if inv_row is not None:
                 with st.form("edit_invoice_form"):
                     issue_date = st.date_input("Issue Date", value=safe_parse_date(inv_row['issue_date']))
                     due_date = st.date_input("Due Date", value=safe_parse_date(inv_row['due_date']))
-                    total_amount = st.number_input("Total Amount (USh)", min_value=0.0, value=float(inv_row['total_amount']), step=1000.0)
+                    total_amount = st.number_input(
+                        "Total Amount (USh)",
+                        min_value=0.0,
+                        value=float(inv_row['total_amount']),
+                        step=1000.0
+                    )
                     notes = st.text_area("Notes", value=inv_row['notes'] or "")
                     submit_edit = st.form_submit_button("Update Invoice")
 
@@ -3160,11 +3177,23 @@ elif page == "Fee Management":
                                         SET issue_date = %s, due_date = %s, total_amount = %s,
                                             balance_amount = %s, status = %s, notes = %s
                                         WHERE id = %s
-                                    """, (issue_date.isoformat(), due_date.isoformat(), float(total_amount),
-                                          float(new_balance), new_status, notes or None, invoice_id))
+                                    """, (
+                                        issue_date.isoformat(),
+                                        due_date.isoformat(),
+                                        float(total_amount),
+                                        float(new_balance),
+                                        new_status,
+                                        notes or None,
+                                        invoice_id
+                                    ))
                                 conn.commit()
+
                             st.success("Invoice updated successfully")
-                            log_action("edit_invoice", f"Updated invoice {selected_inv} to {total_amount}", st.session_state.user['username'])
+                            log_action(
+                                "edit_invoice",
+                                f"Updated invoice {selected_inv} to {total_amount}",
+                                st.session_state.user['username']
+                            )
                             safe_rerun()
                         except Exception as e:
                             st.error(f"Error updating invoice: {str(e)}")
