@@ -2270,9 +2270,9 @@ elif page == "Finances":
         try:
             with db_connection() as conn:
                 df_inc = pd.read_sql(f"""
-                    SELECT i.date as Date, i.receipt_number as "Receipt No", i.amount as Amount,
-                           i.source as Source, ec.name as Category, i.description as Description,
-                           i.payment_method as "Payment Method", i.payer as Payer,
+                    SELECT i.date as "Date", i.receipt_number as "Receipt No", i.amount as "Amount",
+                           i.source as "Source", ec.name as "Category", i.description as "Description",
+                           i.payment_method as "Payment Method", i.payer as "Payer",
                            i.received_by as "Received By", i.created_by as "Created By"
                     FROM incomes i
                     LEFT JOIN expense_categories ec ON i.category_id = ec.id
@@ -2281,9 +2281,9 @@ elif page == "Finances":
                 """, conn, params=params)
 
                 df_exp = pd.read_sql(f"""
-                    SELECT e.date as Date, e.voucher_number as "Voucher No", e.amount as Amount,
-                           ec.name as Category, e.description as Description,
-                           e.payment_method as "Payment Method", e.payee as Payee,
+                    SELECT e.date as "Date", e.voucher_number as "Voucher No", e.amount as "Amount",
+                           ec.name as "Category", e.description as "Description",
+                           e.payment_method as "Payment Method", e.payee as "Payee",
                            e.approved_by as "Approved By", e.created_by as "Created By"
                     FROM expenses e
                     LEFT JOIN expense_categories ec ON e.category_id = ec.id
@@ -2693,7 +2693,7 @@ elif page == "Financial Report":
                             SELECT invoice_number as "Invoice No", student_id as "Student ID",
                                    issue_date as "Issue Date", due_date as "Due Date",
                                    total_amount as "Total Amount", paid_amount as "Paid Amount",
-                                   balance_amount as "Balance Amount", status as Status, notes as Notes
+                                   balance_amount as "Balance Amount", status as "Status", notes as "Notes"
                             FROM invoices
                             WHERE status IN ('Pending','Partially Paid')
                             ORDER BY due_date
@@ -2724,9 +2724,9 @@ elif page == "Financial Report":
                             df_inv = pd.read_sql(
                                 """
                                 SELECT invoice_number as "Invoice No", academic_year as "Academic Year",
-                                       term as Term, total_amount as "Total Amount",
+                                       term as "Term", total_amount as "Total Amount",
                                        paid_amount as "Paid Amount", balance_amount as "Balance Amount",
-                                       status as Status, issue_date as "Issue Date", notes as Notes
+                                       status as "Status", issue_date as "Issue Date", notes as "Notes"
                                 FROM invoices
                                 WHERE student_id = %s
                                 ORDER BY issue_date DESC
@@ -2735,9 +2735,9 @@ elif page == "Financial Report":
                             )
                             df_pay = pd.read_sql(
                                 """
-                                SELECT p.payment_date as "Payment Date", p.amount as Amount,
+                                SELECT p.payment_date as "Payment Date", p.amount as "Amount",
                                        p.payment_method as "Payment Method", p.receipt_number as "Receipt No",
-                                       p.reference_number as "Reference No", p.notes as Notes
+                                       p.reference_number as "Reference No", p.notes as "Notes"
                                 FROM payments p
                                 JOIN invoices i ON p.invoice_id = i.id
                                 WHERE i.student_id = %s
