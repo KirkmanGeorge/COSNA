@@ -3122,13 +3122,21 @@ elif page == "Fee Management":
         if invoices.empty:
             st.info("No invoices available to edit")
         else:
-            selected_inv = st.selectbox("Select Invoice", invoices['invoice_number'].tolist())
-            try:
-                with db_connection() as conn:
-                    inv_row = pd.read_sql("SELECT * FROM invoices WHERE invoice_number = %s", conn, params=(selected_inv,)).iloc[0]
-            except Exception:
-                st.error("Could not load invoice details")
+            invoice_numbers = invoices['invoice_number'].tolist()
+            selected_inv = st.selectbox("Select Invoice", invoice_numbers, key="edit_inv_select")
+
+            # Safe lookup
+            filtered = invoices[invoices['invoice_number'] == selected_inv]
+            if filtered.empty:
+                st.warning(f"Invoice '{selected_inv}' no longer exists or could not be loaded. Refresh the page.")
                 inv_row = None
+            else:
+                try:
+                    with db_connection() as conn:
+                        inv_row = pd.read_sql("SELECT * FROM invoices WHERE invoice_number = %s", conn, params=(selected_inv,)).iloc[0]
+                except Exception:
+                    st.error("Could not load invoice details")
+                    inv_row = None
 
             if inv_row is not None:
                 with st.form("edit_invoice_form"):
