@@ -3180,7 +3180,12 @@ elif page == "Fee Management":
             st.info("No invoices to delete")
         else:
             selected_inv = st.selectbox("Select Invoice to Delete", invoices['invoice_number'].tolist(), key="del_inv_select")
-            inv_id = int(invoices[invoices['invoice_number'] == selected_inv]['id'].iloc[0])
+            filtered_invoice = invoices[invoices['invoice_number'] == selected_inv]
+            if filtered_invoice.empty:
+                st.warning("⚠️ Selected invoice not found. Please reselect.")
+                st.stop()
+            
+            inv_id = int(filtered_invoice['id'].iloc[0])
 
             confirm = st.checkbox(f"Yes, permanently delete invoice {selected_inv}")
             if confirm and st.button("Confirm Delete", type="primary"):
