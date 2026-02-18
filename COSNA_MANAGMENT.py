@@ -2623,8 +2623,8 @@ elif page == "Financial Report":
                     if report_type == "Income vs Expense (date range)":
                         df_inc = pd.read_sql(
                             """
-                            SELECT date as Date, receipt_number as "Receipt No", amount as Amount,
-                                   source as Source, payment_method as "Payment Method", payer as Payer,
+                            SELECT date as "Date", receipt_number as "Receipt No", amount as "Amount",
+                                   source as "Source", payment_method as "Payment Method", payer as "Payer",
                                    description as Description
                             FROM incomes
                             WHERE date BETWEEN %s AND %s
@@ -2634,8 +2634,8 @@ elif page == "Financial Report":
                         )
                         df_exp = pd.read_sql(
                             """
-                            SELECT date as Date, voucher_number as "Voucher No", amount as Amount,
-                                   description as Description, payment_method as "Payment Method", payee as Payee
+                            SELECT date as "Date", voucher_number as "Voucher No", amount as "Amount",
+                                   description as "Description", payment_method as "Payment Method", payee as "Payee"
                             FROM expenses
                             WHERE date BETWEEN %s AND %s
                             ORDER BY date
