@@ -1413,7 +1413,15 @@ elif page == "Students":
                 st.info("No outstanding invoices to pay")
             else:
                 chosen_inv = st.selectbox("Select Invoice to Pay", outstanding_invoices['invoice_number'].tolist())
-                inv_row = outstanding_invoices[outstanding_invoices['invoice_number'] == chosen_inv].iloc[0]
+                filtered_inv = outstanding_invoices[
+                    outstanding_invoices['invoice_number'] == chosen_inv
+                ]
+                
+                if filtered_inv.empty:
+                    st.warning("⚠️ Selected invoice no longer exists or list is empty.")
+                    st.stop()
+                
+                inv_row = filtered_inv.iloc[0]
                 inv_id = int(inv_row['id'])
                 inv_balance = float(inv_row['balance_amount'] if pd.notna(inv_row['balance_amount']) else inv_row['total_amount'])
                 st.write(f"Invoice {chosen_inv} — Balance: USh {inv_balance:,.0f}")
