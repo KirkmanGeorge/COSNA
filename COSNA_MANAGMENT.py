@@ -124,7 +124,7 @@ def generate_code(prefix="RCPT"):
     return f"{prefix}-{day}{random_chars}"
 
 def generate_receipt_number(): return generate_code("RCPT")
-def generate_invoice_number(): generate_code("INV")
+def generate_invoice_number(): return generate_code("INV")
 def generate_voucher_number(): return generate_code("VCH")
 
 def safe_rerun():
@@ -1411,78 +1411,84 @@ elif page == "Students":
                 st.info("No outstanding invoices to pay")
             else:
                 chosen_inv = st.selectbox("Select Invoice to Pay", outstanding_invoices['invoice_number'].tolist())
-                inv_row = outstanding_invoices[outstanding_invoices['invoice_number'] == chosen_inv].iloc[0]
-                inv_id = int(inv_row['id'])
-                inv_balance = float(inv_row['balance_amount'] if pd.notna(inv_row['balance_amount']) else inv_row['total_amount'])
-                st.write(f"Invoice {chosen_inv} — Balance: USh {inv_balance:,.0f}")
+                
+                # Safe filtering - check if row exists
+                filtered = outstanding_invoices[outstanding_invoices['invoice_number'] == chosen_inv]
+                if filtered.empty:
+                    st.warning("Selected invoice no longer available (may have been paid or deleted). Refresh page.")
+                else:
+                    inv_row = filtered.iloc[0]
+                    inv_id = int(inv_row['id'])
+                    inv_balance = float(inv_row['balance_amount']) if pd.notna(inv_row['balance_amount']) else float(inv_row['total_amount'])
+                    st.write(f"Invoice {chosen_inv} — Balance: USh {inv_balance:,.0f}")
 
-                with st.form("pay_invoice_form"):
-                    pay_date = st.date_input("Payment Date", date.today())
-                    pay_amount = st.number_input("Amount (USh)", min_value=0.0, max_value=float(inv_balance), value=float(inv_balance), step=100.0)
-                    pay_method = st.selectbox("Payment Method", ["Cash", "Bank Transfer", "Mobile Money", "Cheque"])
-                    pay_ref = st.text_input("Reference Number")
-                    pay_receipt = st.text_input("Receipt Number", value=generate_receipt_number())
-                    pay_notes = st.text_area("Notes")
-                    submit_pay = st.form_submit_button("Record Payment")
+                    with st.form("pay_invoice_form"):
+                        pay_date = st.date_input("Payment Date", date.today())
+                        pay_amount = st.number_input("Amount (USh)", min_value=0.0, max_value=inv_balance, value=inv_balance, step=100.0)
+                        pay_method = st.selectbox("Payment Method", ["Cash", "Bank Transfer", "Mobile Money", "Cheque"])
+                        pay_ref = st.text_input("Reference Number")
+                        pay_receipt = st.text_input("Receipt Number", value=generate_receipt_number())
+                        pay_notes = st.text_area("Notes")
+                        submit_pay = st.form_submit_button("Record Payment")
 
-                    if submit_pay:
-                        if pay_amount <= 0:
-                            st.error("Enter a positive amount")
-                        elif pay_amount > inv_balance + 0.0001:
-                            st.error("Amount exceeds invoice balance")
-                        else:
-                            try:
-                                with db_connection() as conn:
-                                    conn.autocommit = False
-                                    with conn.cursor() as cur:
-                                        cur.execute("SELECT paid_amount, balance_amount, total_amount FROM invoices WHERE id = %s FOR UPDATE", (inv_id,))
-                                        inv_check = cur.fetchone()
-                                        if not inv_check:
-                                            conn.rollback()
-                                            st.error("Invoice not found")
-                                        else:
-                                            paid_amount = float(inv_check[0]) if inv_check[0] is not None else 0.0
-                                            current_balance = float(inv_check[1]) if inv_check[1] is not None else float(inv_check[2])
-                                            if pay_amount > current_balance + 0.0001:
+                        if submit_pay:
+                            if pay_amount <= 0:
+                                st.error("Enter a positive amount")
+                            elif pay_amount > inv_balance + 0.0001:
+                                st.error("Amount exceeds invoice balance")
+                            else:
+                                try:
+                                    with db_connection() as conn:
+                                        conn.autocommit = False
+                                        with conn.cursor() as cur:
+                                            cur.execute("SELECT paid_amount, balance_amount, total_amount FROM invoices WHERE id = %s FOR UPDATE", (inv_id,))
+                                            inv_check = cur.fetchone()
+                                            if not inv_check:
                                                 conn.rollback()
-                                                st.error("Payment exceeds current balance. Refresh and try again.")
+                                                st.error("Invoice not found")
                                             else:
-                                                new_paid = paid_amount + pay_amount
-                                                new_balance = current_balance - pay_amount
-                                                new_status = 'Fully Paid' if new_balance <= 0 else 'Partially Paid'
-                                                cur.execute(
-                                                    "UPDATE invoices SET paid_amount = %s, balance_amount = %s, status = %s WHERE id = %s",
-                                                    (new_paid, new_balance, new_status, inv_id)
-                                                )
-                                                cur.execute("""
-                                                    INSERT INTO payments (invoice_id, receipt_number, payment_date, amount, payment_method,
-                                                                          reference_number, received_by, notes, created_by)
-                                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                                """, (inv_id, pay_receipt, pay_date.isoformat(), pay_amount, pay_method, pay_ref,
-                                                      st.session_state.user['username'], pay_notes, st.session_state.user['username']))
+                                                paid_amount = float(inv_check[0]) if inv_check[0] is not None else 0.0
+                                                current_balance = float(inv_check[1]) if inv_check[1] is not None else float(inv_check[2])
+                                                if pay_amount > current_balance + 0.0001:
+                                                    conn.rollback()
+                                                    st.error("Payment exceeds current balance. Refresh and try again.")
+                                                else:
+                                                    new_paid = paid_amount + pay_amount
+                                                    new_balance = current_balance - pay_amount
+                                                    new_status = 'Fully Paid' if new_balance <= 0 else 'Partially Paid'
+                                                    cur.execute(
+                                                        "UPDATE invoices SET paid_amount = %s, balance_amount = %s, status = %s WHERE id = %s",
+                                                        (new_paid, new_balance, new_status, inv_id)
+                                                    )
+                                                    cur.execute("""
+                                                        INSERT INTO payments (invoice_id, receipt_number, payment_date, amount, payment_method,
+                                                                              reference_number, received_by, notes, created_by)
+                                                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                                    """, (inv_id, pay_receipt, pay_date.isoformat(), pay_amount, pay_method, pay_ref,
+                                                          st.session_state.user['username'], pay_notes, st.session_state.user['username']))
 
-                                                cur.execute("SELECT id FROM expense_categories WHERE name = 'Tuition Fees'")
-                                                cat_row = cur.fetchone()
-                                                cat_id = cat_row[0] if cat_row else None
-                                                cur.execute("""
-                                                    INSERT INTO incomes (date, receipt_number, amount, source, category_id, payment_method,
-                                                                         payer, received_by, created_by, description)
-                                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                                """, (pay_date.isoformat(), pay_receipt, pay_amount, "Tuition Fees", cat_id,
-                                                      pay_method, student_name, st.session_state.user['username'],
-                                                      st.session_state.user['username'], pay_notes))
+                                                    cur.execute("SELECT id FROM expense_categories WHERE name = 'Tuition Fees'")
+                                                    cat_row = cur.fetchone()
+                                                    cat_id = cat_row[0] if cat_row else None
+                                                    cur.execute("""
+                                                        INSERT INTO incomes (date, receipt_number, amount, source, category_id, payment_method,
+                                                                             payer, received_by, created_by, description)
+                                                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                                    """, (pay_date.isoformat(), pay_receipt, pay_amount, "Tuition Fees", cat_id,
+                                                          pay_method, student_name, st.session_state.user['username'],
+                                                          st.session_state.user['username'], pay_notes))
 
-                                                conn.commit()
-                                                st.success("Payment recorded and invoice updated")
-                                                log_action("pay_invoice", f"Payment {pay_amount} for invoice {chosen_inv}", st.session_state.user['username'])
-                                                safe_rerun()
-                            except Exception as e:
-                                if 'conn' in locals():
-                                    conn.rollback()
-                                st.error(f"Error recording payment: {str(e)}")
-                            finally:
-                                if 'conn' in locals():
-                                    conn.autocommit = True
+                                                    conn.commit()
+                                                    st.success("Payment recorded and invoice updated")
+                                                    log_action("pay_invoice", f"Payment {pay_amount} for invoice {chosen_inv}", st.session_state.user['username'])
+                                                    safe_rerun()
+                                except Exception as e:
+                                    if 'conn' in locals():
+                                        conn.rollback()
+                                    st.error(f"Error recording payment: {str(e)}")
+                                finally:
+                                    if 'conn' in locals():
+                                        conn.autocommit = True
 
             st.subheader("Student Ledger")
             try:
