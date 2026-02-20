@@ -1871,7 +1871,7 @@ elif page == "Uniforms":
             st.dataframe(display_df, use_container_width=True)
             
             total_stock = inventory_df['stock'].sum()
-            total_value = (inventory_df['stock'] * inventory_df['Unit price']).sum()
+            total_value = (inventory_df['stock'] * inventory_df['Unit Price']).sum()
             col1.metric("Total Items in Stock", f"{int(total_stock):,}")
             col2.metric("Total Inventory Value", f"USh {total_value:,.0f}")
 
