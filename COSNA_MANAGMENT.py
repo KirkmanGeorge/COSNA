@@ -1870,9 +1870,8 @@ elif page == "Uniforms":
             display_df['Unit Price'] = display_df['Unit Price'].apply(lambda x: f"USh {x:,.0f}" if pd.notna(x) else "N/A")
             st.dataframe(display_df, use_container_width=True)
 
-            total_stock = inventory_df['quantity'].sum()
-            total_value = (inventory_df['quantity'] * inventory_df['Unit Price']).sum()
-            col1, col2 = st.columns(2)
+            total_stock = inventory_df['stock'].sum()
+            total_value = (inventory_df['stock'] * inventory_df['unit_price']).sum()
             col1.metric("Total Items in Stock", f"{int(total_stock):,}")
             col2.metric("Total Inventory Value", f"USh {total_value:,.0f}")
 
