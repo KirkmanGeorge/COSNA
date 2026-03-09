@@ -47,47 +47,18 @@ st.markdown("Students • Uniforms • Finances • Reports")
 # ────────────────────────────────────────────────
 @contextlib.contextmanager
 def db_connection():
-    """Context manager for database connections.
-    Uses Supabase pooler (port 6543) with SSL required.
-    Falls back to direct port 5432 if pooler fails.
-    """
     conn = None
     try:
         conn = psycopg2.connect(
-            host=os.environ.get("DB_HOST", "aws-1-eu-north-1.pooler.supabase.com"),
-            port=int(os.environ.get("DB_PORT", "6543")),
+            host=os.environ.get("DB_HOST", "aws-1-eu-central-1.pooler.supabase.com"),
+            port=os.environ.get("DB_PORT", "5432"),
             dbname=os.environ.get("DB_NAME", "postgres"),
-            user=os.environ.get("DB_USER", "postgres.pejxvbrrpmqunrulqfdm"),
-            password=os.environ.get("DB_PASSWORD", "4249@Kakman"),
-            sslmode=os.environ.get("DB_SSLMODE", "require"),
-            connect_timeout=20,
-            keepalives=1,
-            keepalives_idle=30,
-            keepalives_interval=10,
-            keepalives_count=5,
-            options="-c search_path=public -c statement_timeout=60000"
+            user=os.environ.get("DB_USER", "postgres.cqdryfzqgsivqfoxdpkb"),
+            password=os.environ.get("DB_PASSWORD", "4249@Kakman")
         )
         yield conn
-    except psycopg2.OperationalError:
-        # Fallback: try direct port 5432
-        try:
-            if conn:
-                conn.close()
-            conn = psycopg2.connect(
-                host=os.environ.get("DB_HOST", "aws-1-eu-north-1.pooler.supabase.com"),
-                port=5432,
-                dbname=os.environ.get("DB_NAME", "postgres"),
-                user=os.environ.get("DB_USER", "postgres.pejxvbrrpmqunrulqfdm"),
-                password=os.environ.get("DB_PASSWORD", "4249@Kakman"),
-                sslmode="require",
-                connect_timeout=20,
-                options="-c search_path=public -c statement_timeout=60000"
-            )
-            yield conn
-        except Exception as e:
-            raise e
     finally:
-        if conn and not conn.closed:
+        if conn:
             conn.close()
 
 # ────────────────────────────────────────────────
@@ -179,45 +150,14 @@ def table_has_column(conn, table_name, column_name):
         return cur.fetchone() is not None
 
 def safe_alter_add_column(conn, table, column_def):
-    """Add a column to a table if it doesn't exist.
-    Handles UNIQUE constraint separately to avoid errors on existing tables.
-    """
-    import re as _re
     col_name = column_def.split()[0]
     try:
         if not table_has_column(conn, table, col_name):
-            # Strip UNIQUE keyword from column def — add as separate constraint
-            has_unique = bool(_re.search(r'(?i)\bUNIQUE\b', column_def))
-            col_def_clean = _re.sub(r'(?i)\bUNIQUE\b', '', column_def).strip()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_def_clean}")
-                conn.commit()
-            except Exception:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-                return False
-            if has_unique:
-                constraint_name = f"uq_{table}_{col_name}"
-                try:
-                    with conn.cursor() as cur2:
-                        cur2.execute(
-                            f"ALTER TABLE {table} ADD CONSTRAINT {constraint_name} UNIQUE ({col_name})"
-                        )
-                    conn.commit()
-                except Exception:
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
+            with conn.cursor() as cur:
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
+            conn.commit()
             return True
     except Exception:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
         return False
     return False
 
@@ -225,9 +165,6 @@ def safe_alter_add_column(conn, table, column_def):
 # Initialize DB and seed
 # ────────────────────────────────────────────────
 def initialize_database():
-    """Create all tables and seed default data.
-    Errors in critical table creation are raised; seed errors are silently ignored.
-    """
     with db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute('''
@@ -423,89 +360,19 @@ def initialize_database():
             ''')
             conn.commit()
 
-        # ── Safe migrations: ensure ALL cross-section columns exist ──
-        # incomes (read by Dashboard, Finances, Cashbook, Financial Reports)
-        safe_alter_add_column(conn, "incomes", "receipt_number TEXT UNIQUE")
-        safe_alter_add_column(conn, "incomes", "source TEXT")
-        safe_alter_add_column(conn, "incomes", "category_id INTEGER")
-        safe_alter_add_column(conn, "incomes", "description TEXT")
-        safe_alter_add_column(conn, "incomes", "payment_method TEXT")
-        safe_alter_add_column(conn, "incomes", "payer TEXT")
-        safe_alter_add_column(conn, "incomes", "student_id INTEGER")
-        safe_alter_add_column(conn, "incomes", "attachment_path TEXT")
-        safe_alter_add_column(conn, "incomes", "received_by TEXT")
+        # Safe migrations
         safe_alter_add_column(conn, "incomes", "created_by TEXT")
-        # expenses (read by Dashboard, Finances, Cashbook, Financial Reports)
-        safe_alter_add_column(conn, "expenses", "voucher_number TEXT UNIQUE")
-        safe_alter_add_column(conn, "expenses", "category_id INTEGER")
-        safe_alter_add_column(conn, "expenses", "description TEXT")
-        safe_alter_add_column(conn, "expenses", "payment_method TEXT")
-        safe_alter_add_column(conn, "expenses", "payee TEXT")
-        safe_alter_add_column(conn, "expenses", "attachment_path TEXT")
-        safe_alter_add_column(conn, "expenses", "approved_by TEXT")
+        safe_alter_add_column(conn, "incomes", "received_by TEXT")
+        safe_alter_add_column(conn, "incomes", "description TEXT")
+        safe_alter_add_column(conn, "incomes", "category_id INTEGER")
+        safe_alter_add_column(conn, "incomes", "receipt_number TEXT UNIQUE")
         safe_alter_add_column(conn, "expenses", "created_by TEXT")
-        # invoices (read by Dashboard, Student Fees, Financial Reports, Fee Management)
-        safe_alter_add_column(conn, "invoices", "invoice_number TEXT UNIQUE")
-        safe_alter_add_column(conn, "invoices", "issue_date DATE")
-        safe_alter_add_column(conn, "invoices", "due_date DATE")
-        safe_alter_add_column(conn, "invoices", "academic_year TEXT")
-        safe_alter_add_column(conn, "invoices", "term TEXT")
-        safe_alter_add_column(conn, "invoices", "total_amount REAL")
-        safe_alter_add_column(conn, "invoices", "paid_amount REAL")
-        safe_alter_add_column(conn, "invoices", "balance_amount REAL")
-        safe_alter_add_column(conn, "invoices", "status TEXT")
-        safe_alter_add_column(conn, "invoices", "notes TEXT")
-        safe_alter_add_column(conn, "invoices", "created_by TEXT")
-        # payments (read by Student Fees, Financial Reports)
-        safe_alter_add_column(conn, "payments", "receipt_number TEXT UNIQUE")
-        safe_alter_add_column(conn, "payments", "payment_date DATE")
-        safe_alter_add_column(conn, "payments", "amount REAL")
-        safe_alter_add_column(conn, "payments", "payment_method TEXT")
-        safe_alter_add_column(conn, "payments", "reference_number TEXT")
-        safe_alter_add_column(conn, "payments", "received_by TEXT")
-        safe_alter_add_column(conn, "payments", "notes TEXT")
-        safe_alter_add_column(conn, "payments", "created_by TEXT")
-        # students (read by all sections with student joins)
+        safe_alter_add_column(conn, "expenses", "approved_by TEXT")
+        safe_alter_add_column(conn, "expenses", "voucher_number TEXT UNIQUE")
         safe_alter_add_column(conn, "students", "normalized_name TEXT")
-        safe_alter_add_column(conn, "students", "student_type TEXT")
-        safe_alter_add_column(conn, "students", "registration_fee_paid INTEGER")
-        # uniform_categories
         safe_alter_add_column(conn, "uniform_categories", "normalized_category TEXT")
-        safe_alter_add_column(conn, "uniform_categories", "gender TEXT")
-        safe_alter_add_column(conn, "uniform_categories", "is_shared INTEGER")
-        # staff
-        safe_alter_add_column(conn, "staff", "normalized_name TEXT")
-        safe_alter_add_column(conn, "staff", "position TEXT")
-        safe_alter_add_column(conn, "staff", "hire_date DATE")
-        # staff_transactions
-        safe_alter_add_column(conn, "staff_transactions", "transaction_type TEXT")
-        safe_alter_add_column(conn, "staff_transactions", "voucher_number TEXT UNIQUE")
-        safe_alter_add_column(conn, "staff_transactions", "approved_by TEXT")
-        safe_alter_add_column(conn, "staff_transactions", "created_by TEXT")
-        # fee_structure
-        safe_alter_add_column(conn, "fee_structure", "academic_year TEXT")
-        safe_alter_add_column(conn, "fee_structure", "total_fee REAL")
-        # terms
-        safe_alter_add_column(conn, "terms", "academic_year TEXT")
-        safe_alter_add_column(conn, "terms", "start_date DATE")
-        safe_alter_add_column(conn, "terms", "end_date DATE")
-
-        # ── Fix NULL paid_amount / balance_amount on any existing invoices ──
-        with conn.cursor() as _cur_fix:
-            try:
-                _cur_fix.execute("""
-                    UPDATE invoices
-                    SET paid_amount = COALESCE(paid_amount, 0),
-                        balance_amount = COALESCE(balance_amount, total_amount),
-                        status = COALESCE(status, 'Pending')
-                    WHERE paid_amount IS NULL OR balance_amount IS NULL OR status IS NULL
-                """)
-                conn.commit()
-            except Exception:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
+        safe_alter_add_column(conn, "invoices", "created_by TEXT")
+        safe_alter_add_column(conn, "payments", "created_by TEXT")
 
         # Backfill normalized fields
         with conn.cursor() as cur:
@@ -629,53 +496,6 @@ def initialize_database():
                 pass
 
 initialize_database()
-
-# ────────────────────────────────────────────────
-# Startup DB Health Check
-# ────────────────────────────────────────────────
-def check_db_health():
-    """
-    Verifies the database connection and that all critical tables/columns
-    exist. Returns a dict with status info shown in the sidebar.
-    """
-    results = {"connected": False, "tables": {}, "errors": []}
-    critical_tables = {
-        "invoices":   ["invoice_number", "student_id", "academic_year", "term",
-                       "total_amount", "paid_amount", "balance_amount", "status"],
-        "payments":   ["invoice_id", "receipt_number", "payment_date", "amount"],
-        "incomes":    ["receipt_number", "amount", "source", "payment_method", "payer"],
-        "expenses":   ["voucher_number", "amount", "category_id", "payment_method"],
-        "students":   ["name", "class_id", "student_type"],
-        "fee_structure": ["class_id", "term", "academic_year", "total_fee"],
-        "terms":      ["academic_year", "term", "start_date", "end_date"],
-    }
-    try:
-        with db_connection() as conn:
-            results["connected"] = True
-            with conn.cursor() as cur:
-                for table, cols in critical_tables.items():
-                    missing = []
-                    for col in cols:
-                        cur.execute("""
-                            SELECT column_name FROM information_schema.columns
-                            WHERE table_name=%s AND column_name=%s
-                        """, (table, col))
-                        if not cur.fetchone():
-                            missing.append(col)
-                    results["tables"][table] = missing
-    except Exception as e:
-        results["errors"].append(str(e))
-    return results
-
-if "db_health" not in st.session_state:
-    st.session_state["db_health"] = check_db_health()
-
-_health = st.session_state["db_health"]
-if not _health["connected"]:
-    st.error(f"⛔ Database connection failed: {'; '.join(_health['errors'])}")
-    st.info("Check DB credentials, Supabase project status, and network access.")
-    st.stop()
-
 # ────────────────────────────────────────────────
 # Audit logging
 # ────────────────────────────────────────────────
@@ -934,20 +754,6 @@ with st.sidebar:
     user_safe = st.session_state.get('user') or {}
     st.markdown(f"**User:** {user_safe.get('full_name') or user_safe.get('username')}")
     st.markdown(f"**Role:** {user_safe.get('role') or 'Clerk'}")
-
-    # Show DB health summary
-    _h = st.session_state.get("db_health", {})
-    if _h.get("connected"):
-        _missing_all = {t: m for t, m in _h.get("tables", {}).items() if m}
-        if _missing_all:
-            with st.expander("⚠️ Schema Issues Detected", expanded=True):
-                for t, m in _missing_all.items():
-                    st.warning(f"`{t}` missing: {', '.join(m)}")
-                st.caption("Re-initialize by restarting the app or contact admin.")
-        else:
-            st.success("✅ DB Connected & Schema OK", icon="✅")
-    else:
-        st.error("⛔ DB Not Connected")
 
     if st.button("Logout"):
         uname = user_safe.get('username', 'unknown')
